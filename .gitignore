@@ -1,0 +1,23 @@
+
+# Data & videos: never push these (Fitness-AQA is non-commercial; datasets stay on Kaggle)
+data/
+videos/
+*.mp4
+*.mov
+*.MOV
+*.zip
+*.npz
+*.parquet
+*.csv
+*.task
+
+# Python / Jupyter clutter
+__pycache__/
+.ipynb_checkpoints/
+.venv/
+venv/
+
+# Mac / editor
+.DS_Store
+.vscode/
+EOF
