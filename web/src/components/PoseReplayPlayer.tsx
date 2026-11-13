@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
-import { findNearestFrame } from "@/lib/pose/findNearestFrame";
-import { drawSkeleton } from "@/lib/pose/skeleton";
+import { renderReplayFrame } from "@/lib/pose/overlay";
+import type { AnalysisResult } from "@/types/analysis";
 import type { PoseRecording } from "@/types/pose";
 
 // What parents can do with the player through its ref.
@@ -12,13 +12,17 @@ export type PoseReplayPlayerHandle = {
 type PoseReplayPlayerProps = {
   videoUrl: string;
   recording: PoseRecording;
+  // When given (and showOverlay is on), the coaching overlay is drawn too.
+  analysis?: AnalysisResult | null;
+  showOverlay?: boolean;
   ref?: Ref<PoseReplayPlayerHandle>;
 };
 
-// Plays the original video with a canvas exactly on top that draws the stored skeleton.
+// Plays the original video with a canvas exactly on top that draws the stored skeleton
+// and the coaching overlay (all drawing lives in lib/pose/overlay.ts).
 // Video and canvas share the same box and both use object-contain with the same
-// aspect ratio, so the skeleton lines up at any screen size.
-export function PoseReplayPlayer({ videoUrl, recording, ref }: PoseReplayPlayerProps) {
+// aspect ratio, so the drawing lines up at any screen size.
+export function PoseReplayPlayer({ videoUrl, recording, analysis, showOverlay = true, ref }: PoseReplayPlayerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -41,25 +45,29 @@ export function PoseReplayPlayer({ videoUrl, recording, ref }: PoseReplayPlayerP
     const context = canvasElement?.getContext("2d");
     if (!videoElement || !canvasElement || !context) return;
 
-    // Clears the overlay and draws the skeleton stored closest to this video time.
-    const drawOverlayAt = (videoTimeMs: number): void => {
-      context.clearRect(0, 0, canvasElement.width, canvasElement.height);
-      const nearestFrame = findNearestFrame(recording.frames, videoTimeMs);
-      if (nearestFrame?.landmarks) {
-        drawSkeleton(context, nearestFrame.landmarks, canvasElement.width, canvasElement.height);
-      }
+    // Redraws everything (skeleton + overlay) for this video time.
+    const drawFrameAt = (timeSeconds: number): void => {
+      renderReplayFrame(context, {
+        recording,
+        analysis,
+        timeSeconds,
+        showOverlay,
+        canvasWidth: canvasElement.width,
+        canvasHeight: canvasElement.height,
+      });
     };
 
     // While playing: redraw on every presented frame, using that frame's exact media time.
     let frameCallbackHandle = 0;
     const handleVideoFrame = (_now: DOMHighResTimeStamp, frameMetadata: VideoFrameCallbackMetadata): void => {
-      drawOverlayAt(frameMetadata.mediaTime * 1000);
+      drawFrameAt(frameMetadata.mediaTime);
       frameCallbackHandle = videoElement.requestVideoFrameCallback(handleVideoFrame);
     };
     frameCallbackHandle = videoElement.requestVideoFrameCallback(handleVideoFrame);
 
-    // While paused: redraw after seeking and once the first frame loads.
-    const drawAtCurrentTime = (): void => drawOverlayAt(videoElement.currentTime * 1000);
+    // While paused: redraw after seeking, once the first frame loads, and right away
+    // (this effect also re-runs when the overlay is toggled).
+    const drawAtCurrentTime = (): void => drawFrameAt(videoElement.currentTime);
     videoElement.addEventListener("seeked", drawAtCurrentTime);
     videoElement.addEventListener("loadeddata", drawAtCurrentTime);
     if (videoElement.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) drawAtCurrentTime();
@@ -69,7 +77,7 @@ export function PoseReplayPlayer({ videoUrl, recording, ref }: PoseReplayPlayerP
       videoElement.removeEventListener("seeked", drawAtCurrentTime);
       videoElement.removeEventListener("loadeddata", drawAtCurrentTime);
     };
-  }, [recording]);
+  }, [recording, analysis, showOverlay]);
 
   return (
     <div ref={containerRef} className="relative overflow-hidden rounded-xl bg-black">

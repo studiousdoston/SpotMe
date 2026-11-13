@@ -25,8 +25,7 @@ The user uploads or records a workout video → MediaPipe pose runs **in the bro
 
 - Server: `cd server && source .venv/bin/activate && uvicorn main:app --reload --port 8000`
 - Web: `cd web && npm run dev` (Vite proxies `/api` → `localhost:8000`)
-- Checks: `cd web && npm run build && npm run lint` · `cd server && pytest && ruff check .`
-
+- Checks: `cd web && npm run build && npm run lint && npm test` · `cd server && pytest && ruff check .`
 ## Code style
 
 - **Full, descriptive variable names.** No single letters or cryptic abbreviations (`landmarks`, not `lm`; `frame_index`, not `i`), except trivial loop counters.

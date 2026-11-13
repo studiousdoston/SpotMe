@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
 import { DepthChart } from "@/components/DepthChart";
 import { DownloadLandmarksButton } from "@/components/DownloadLandmarksButton";
@@ -13,6 +13,7 @@ import type { RepResult } from "@/types/analysis";
 export function ResultsPage() {
   const navigate = useNavigate();
   const playerRef = useRef<PoseReplayPlayerHandle>(null);
+  const [isOverlayOn, setIsOverlayOn] = useState(true);
   const { session, clearSession } = useWorkoutSession();
   const { video, recording, extractionStats, analysis } = session;
 
@@ -32,7 +33,27 @@ export function ResultsPage() {
 
   return (
     <section className="space-y-6">
-      <PoseReplayPlayer ref={playerRef} videoUrl={video.videoUrl} recording={recording} />
+      {/* Replay with skeleton + coaching overlay, and the overlay toggle (only useful when reps were counted) */}
+      <div className="space-y-2">
+        <PoseReplayPlayer
+          ref={playerRef}
+          videoUrl={video.videoUrl}
+          recording={recording}
+          analysis={analysis}
+          showOverlay={isOverlayOn}
+        />
+        {analysis.status === "ok" && (
+          <button
+            type="button"
+            aria-pressed={isOverlayOn}
+            onClick={() => setIsOverlayOn((wasOverlayOn) => !wasOverlayOn)}
+            className="flex h-11 w-full items-center justify-between rounded-xl bg-neutral-900 px-4 text-sm font-medium text-neutral-200 active:bg-neutral-800"
+          >
+            <span>Coaching overlay</span>
+            <span className={isOverlayOn ? "text-accent" : "text-neutral-500"}>{isOverlayOn ? "On" : "Off"}</span>
+          </button>
+        )}
+      </div>
 
       {analysis.status === "low_visibility" ? (
         // Couldn't see enough of the body: the server's advice replaces the reps.

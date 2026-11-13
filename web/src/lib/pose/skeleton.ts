@@ -14,8 +14,8 @@ const LAST_JOINT_INDEX = 28;
 // Joints below this visibility are hidden instead of drawn as guesses.
 export const MIN_JOINT_VISIBILITY = 0.5;
 
-// Matches --color-accent in src/index.css.
-const SKELETON_LINE_COLOR = "#a3e635";
+// Default line color; matches --color-accent in src/index.css.
+export const SKELETON_LINE_COLOR = "#a3e635";
 const JOINT_DOT_COLOR = "#ffffff";
 
 function isVisible(landmark: Landmark | undefined): landmark is Landmark {
@@ -25,18 +25,20 @@ function isVisible(landmark: Landmark | undefined): landmark is Landmark {
 // Draws the body skeleton onto a canvas of the given pixel size.
 // Landmarks are normalized (0–1), so they are scaled to width/height here.
 // The caller clears the canvas; this only draws, so other layers (rep count, angles) can be added.
+// lineColor lets the overlay tint the skeleton (e.g. by the current rep's depth grade).
 export function drawSkeleton(
   context: CanvasRenderingContext2D,
   landmarks: Landmark[],
   width: number,
   height: number,
+  lineColor: string = SKELETON_LINE_COLOR,
 ): void {
   // Scale stroke and dot size with the video so they look the same on any resolution.
   const lineWidth = Math.max(2, Math.min(width, height) * 0.008);
   const jointRadius = lineWidth * 1.2;
 
   // Lines between connected joints (only when both ends are visible).
-  context.strokeStyle = SKELETON_LINE_COLOR;
+  context.strokeStyle = lineColor;
   context.lineWidth = lineWidth;
   context.lineCap = "round";
   for (const [startIndex, endIndex] of SKELETON_CONNECTIONS) {

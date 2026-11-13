@@ -10,18 +10,13 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
+import { formatDepth } from "@/lib/formatDepth";
 import type { DepthSignal, RepResult } from "@/types/analysis";
 
 // Same threshold as the server's depth_grade (server/analysis/squat.py).
 const GOOD_DEPTH_THRESHOLD = 0.9;
 // Extra y-range above the deepest point: the band where rep numbers are drawn.
 const REP_LABEL_HEADROOM = 0.15;
-
-// Depth as text; "-0.0" (tiny negative values) shows as "0".
-function formatDepth(depthValue: number, decimals: number): string {
-  const formattedDepth = depthValue.toFixed(decimals);
-  return Number(formattedDepth) === 0 ? "0" : formattedDepth;
-}
 
 // Chart colors for the dark surface: the accent for the one data line,
 // quiet grays for everything else (grid, axes, labels, rep shading).
