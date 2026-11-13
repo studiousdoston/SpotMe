@@ -9,11 +9,14 @@ const SEEK_FRAME_CALLBACK_GRACE_MS = 300;
 
 // Safety net for slow devices: playback speeds to step down through (never below 0.25×).
 const PLAYBACK_RATE_STEPS = [1, 0.5, 0.25];
-// A gap of more than 2 frame intervals between analyzed frames = 2+ presented frames skipped.
-const SKIPPED_FRAMES_THAT_TRIGGER_SLOWDOWN = 2;
-// After slowing down, analyze this many frames before slowing down again
-// (frames already in flight at the old speed shouldn't count against the new one).
-const FRAMES_BETWEEN_SLOWDOWNS = 10;
+// Speed is judged over windows of this many analyzed frames (a fresh window starts after each check,
+// so frames analyzed at the old speed never count against the new one)...
+const SPEED_CHECK_WINDOW_FRAMES = 10;
+// ...and playback slows down when more than this share of the window's presented frames were skipped.
+// The share matters, not single gaps: a phone that steadily misses every other frame (50%) never
+// shows a gap of more than 2 frame intervals, which is why a per-gap rule never fired on iOS.
+// One stray skip in a window (~9%) is tolerated as a hiccup.
+const MAX_SKIPPED_SHARE = 0.1;
 
 export type ExtractionResult = {
   recording: PoseRecording;
@@ -182,22 +185,39 @@ type PlayAndAnalyzeOptions = {
   onProgress: (progress: ExtractionProgress) => void;
 };
 
+type PlaybackResult = {
+  framesSkipped: number;
+  // Speed requested at the end of the run.
+  finalPlaybackRate: number;
+  // Measured: video seconds played per wall-clock second (shows whether the browser honored playbackRate).
+  averagePlaybackSpeed: number;
+};
+
 // Plays to the end, analyzing each presented frame. Slows playback down if detection
-// can't keep up. Resolves with the number of presented frames that were skipped.
+// can't keep up.
 function playAndAnalyze({
   videoElement,
   frameRecorder,
   firstShownFrame,
   signal,
   onProgress,
-}: PlayAndAnalyzeOptions): Promise<number> {
+}: PlayAndAnalyzeOptions): Promise<PlaybackResult> {
   return new Promise((resolve, reject) => {
     let isSettled = false;
     let frameCallbackHandle: number | null = null;
     let framesSkipped = 0;
     let lastPresentedFrameNumber = firstShownFrame.presentedFrames;
+
+    // Speed control state.
     let playbackRateStepIndex = 0;
-    let framesUntilNextSlowdownAllowed = 0;
+    let desiredPlaybackRate = PLAYBACK_RATE_STEPS[0];
+    let windowAnalyzedFrames = 0;
+    let windowSkippedFrames = 0;
+    let hasWarnedAboutRateReset = false;
+
+    // First and latest frame callbacks (wall time + video time), for the measured average speed.
+    let firstCallback: { wallTimeMs: number; mediaTimeSeconds: number } | null = null;
+    let latestCallback: { wallTimeMs: number; mediaTimeSeconds: number } | null = null;
 
     function cleanUp(): void {
       isSettled = true;
@@ -214,21 +234,51 @@ function playAndAnalyze({
       reject(error);
     }
 
-    // Drops to the next slower speed if detection fell behind (and we haven't just slowed down).
+    // Every SPEED_CHECK_WINDOW_FRAMES analyzed frames: if too many presented frames were skipped
+    // in that window, drop to the next slower speed. Then start a fresh window.
     function slowDownIfFallingBehind(skippedSinceLastFrame: number): void {
-      framesUntilNextSlowdownAllowed = Math.max(0, framesUntilNextSlowdownAllowed - 1);
-      const isFallingBehind = skippedSinceLastFrame >= SKIPPED_FRAMES_THAT_TRIGGER_SLOWDOWN;
+      windowAnalyzedFrames += 1;
+      windowSkippedFrames += skippedSinceLastFrame;
+      if (windowAnalyzedFrames < SPEED_CHECK_WINDOW_FRAMES) return;
+
+      const skippedShare = windowSkippedFrames / (windowSkippedFrames + windowAnalyzedFrames);
       const canSlowDown = playbackRateStepIndex < PLAYBACK_RATE_STEPS.length - 1;
-      if (isFallingBehind && canSlowDown && framesUntilNextSlowdownAllowed === 0) {
+      if (skippedShare > MAX_SKIPPED_SHARE && canSlowDown) {
         playbackRateStepIndex += 1;
-        videoElement.playbackRate = PLAYBACK_RATE_STEPS[playbackRateStepIndex];
-        framesUntilNextSlowdownAllowed = FRAMES_BETWEEN_SLOWDOWNS;
+        desiredPlaybackRate = PLAYBACK_RATE_STEPS[playbackRateStepIndex];
+        videoElement.playbackRate = desiredPlaybackRate;
       }
+      windowAnalyzedFrames = 0;
+      windowSkippedFrames = 0;
+    }
+
+    // Some browsers may reset playbackRate during playback; put it back if so (and say so once).
+    function keepDesiredPlaybackRate(): void {
+      if (videoElement.playbackRate === desiredPlaybackRate) return;
+      if (!hasWarnedAboutRateReset) {
+        console.warn(
+          `playbackRate was ${videoElement.playbackRate}, expected ${desiredPlaybackRate}; re-applying.`,
+        );
+        hasWarnedAboutRateReset = true;
+      }
+      videoElement.playbackRate = desiredPlaybackRate;
+    }
+
+    // Video seconds played per wall-clock second, between the first and latest frame callbacks.
+    function measureAveragePlaybackSpeed(): number {
+      if (firstCallback === null || latestCallback === null) return desiredPlaybackRate;
+      const wallSeconds = (latestCallback.wallTimeMs - firstCallback.wallTimeMs) / 1000;
+      if (wallSeconds <= 0) return desiredPlaybackRate;
+      return (latestCallback.mediaTimeSeconds - firstCallback.mediaTimeSeconds) / wallSeconds;
     }
 
     // Runs once per presented frame: count skips, detect, adjust speed, report progress.
-    function handleVideoFrame(_now: DOMHighResTimeStamp, frameMetadata: VideoFrameCallbackMetadata): void {
+    function handleVideoFrame(now: DOMHighResTimeStamp, frameMetadata: VideoFrameCallbackMetadata): void {
       if (isSettled) return;
+
+      latestCallback = { wallTimeMs: now, mediaTimeSeconds: frameMetadata.mediaTime };
+      firstCallback ??= latestCallback;
+      keepDesiredPlaybackRate();
 
       // Frames presented while detection was busy never reach this callback.
       const skippedSinceLastFrame =
@@ -251,7 +301,7 @@ function playAndAnalyze({
       const hasKnownDuration = Number.isFinite(videoElement.duration) && videoElement.duration > 0;
       onProgress({
         progressFraction: hasKnownDuration ? Math.min(1, frameMetadata.mediaTime / videoElement.duration) : 0,
-        playbackRate: videoElement.playbackRate,
+        playbackRate: desiredPlaybackRate,
       });
 
       frameCallbackHandle = videoElement.requestVideoFrameCallback(handleVideoFrame);
@@ -260,7 +310,11 @@ function playAndAnalyze({
     function handleEnded(): void {
       if (isSettled) return;
       cleanUp();
-      resolve(framesSkipped);
+      resolve({
+        framesSkipped,
+        finalPlaybackRate: desiredPlaybackRate,
+        averagePlaybackSpeed: measureAveragePlaybackSpeed(),
+      });
     }
 
     function handleVideoError(): void {
@@ -280,9 +334,9 @@ function playAndAnalyze({
     signal.addEventListener("abort", handleAbort);
     videoElement.addEventListener("ended", handleEnded);
     videoElement.addEventListener("error", handleVideoError);
-    videoElement.playbackRate = PLAYBACK_RATE_STEPS[0];
+    videoElement.playbackRate = desiredPlaybackRate;
     frameCallbackHandle = videoElement.requestVideoFrameCallback(handleVideoFrame);
-    onProgress({ progressFraction: 0, playbackRate: videoElement.playbackRate });
+    onProgress({ progressFraction: 0, playbackRate: desiredPlaybackRate });
     videoElement.play().catch((playError: unknown) => {
       // play() rejects with AbortError when we pause during cleanup; that's not a failure.
       if (playError instanceof DOMException && playError.name === "AbortError") return;
@@ -313,7 +367,7 @@ export async function extractLandmarks({
   frameRecorder.analyzeCurrentFrame(firstShownFrame.videoTimeMs);
 
   // Step 2: playback.
-  const framesSkipped = await playAndAnalyze({ videoElement, frameRecorder, firstShownFrame, signal, onProgress });
+  const playbackResult = await playAndAnalyze({ videoElement, frameRecorder, firstShownFrame, signal, onProgress });
 
   return {
     recording: {
@@ -325,9 +379,11 @@ export async function extractLandmarks({
     stats: {
       framesProcessed: frameRecorder.frames.length,
       framesWithPerson: frameRecorder.framesWithPerson,
-      framesSkipped,
+      framesSkipped: playbackResult.framesSkipped,
       largestGapMs: frameRecorder.largestGapMs,
       processingTimeMs: performance.now() - processingStartTime,
+      finalPlaybackRate: playbackResult.finalPlaybackRate,
+      averagePlaybackSpeed: playbackResult.averagePlaybackSpeed,
     },
   };
 }

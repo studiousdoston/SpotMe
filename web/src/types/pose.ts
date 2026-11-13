@@ -32,4 +32,8 @@ export type PoseExtractionStats = {
   // Longest stretch of video time between two analyzed frames.
   largestGapMs: number;
   processingTimeMs: number;
+  // Playback speed the safety net ended on (1, 0.5 or 0.25).
+  finalPlaybackRate: number;
+  // Measured video seconds per wall-clock second during playback (≈ finalPlaybackRate if the browser honored it).
+  averagePlaybackSpeed: number;
 };
