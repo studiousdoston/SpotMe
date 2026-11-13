@@ -1,19 +1,39 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useImperativeHandle, useRef, type Ref } from "react";
 import { findNearestFrame } from "@/lib/pose/findNearestFrame";
 import { drawSkeleton } from "@/lib/pose/skeleton";
 import type { PoseRecording } from "@/types/pose";
 
+// What parents can do with the player through its ref.
+export type PoseReplayPlayerHandle = {
+  // Jumps to this video time and brings the player into view.
+  seekTo: (timeSeconds: number) => void;
+};
+
 type PoseReplayPlayerProps = {
   videoUrl: string;
   recording: PoseRecording;
+  ref?: Ref<PoseReplayPlayerHandle>;
 };
 
 // Plays the original video with a canvas exactly on top that draws the stored skeleton.
 // Video and canvas share the same box and both use object-contain with the same
 // aspect ratio, so the skeleton lines up at any screen size.
-export function PoseReplayPlayer({ videoUrl, recording }: PoseReplayPlayerProps) {
+export function PoseReplayPlayer({ videoUrl, recording, ref }: PoseReplayPlayerProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  // Seeking: the "seeked" listener below redraws the skeleton at the new time.
+  useImperativeHandle(
+    ref,
+    () => ({
+      seekTo: (timeSeconds: number) => {
+        if (videoRef.current !== null) videoRef.current.currentTime = timeSeconds;
+        containerRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      },
+    }),
+    [],
+  );
 
   useEffect(() => {
     const videoElement = videoRef.current;
@@ -52,7 +72,7 @@ export function PoseReplayPlayer({ videoUrl, recording }: PoseReplayPlayerProps)
   }, [recording]);
 
   return (
-    <div className="relative overflow-hidden rounded-xl bg-black">
+    <div ref={containerRef} className="relative overflow-hidden rounded-xl bg-black">
       <video
         ref={videoRef}
         src={videoUrl}

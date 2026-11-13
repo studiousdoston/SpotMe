@@ -1,47 +1,85 @@
 import { useState } from "react";
+import { Link, useNavigate } from "react-router";
+import { describeAnalyzeError, useAnalyzeRecordingMutation } from "@/api/analyze";
+import { ExercisePicker } from "@/components/ExercisePicker";
 import { PoseExtractionView } from "@/components/PoseExtractionView";
-import { PoseReplayPlayer } from "@/components/PoseReplayPlayer";
-import { RecordingSummary } from "@/components/RecordingSummary";
 import { VideoPicker } from "@/components/VideoPicker";
 import { usePoseLandmarker } from "@/hooks/usePoseLandmarker";
 import { useVideoFile } from "@/hooks/useVideoFile";
+import { useWorkoutSession } from "@/hooks/useWorkoutSession";
+import { isAnalyzableExercise } from "@/lib/exercises";
 import type { ExtractionResult } from "@/lib/pose/extractLandmarks";
+import type { PoseRecording } from "@/types/pose";
 
-// Where the current video is in the analysis flow.
-type AnalysisState =
-  | { status: "idle" }
-  | { status: "processing" }
-  | { status: "done"; extractionResult: ExtractionResult }
-  | { status: "failed"; errorMessage: string };
+// In-browser pose extraction for the current video.
+type ExtractionState = { status: "idle" } | { status: "extracting" } | { status: "failed"; errorMessage: string };
 
-// Pick a video → pose detection runs in the browser → replay with the skeleton on top.
+// Pick exercise → pick video → pose detection in the browser → send landmarks to the server → /results.
 export function UploadPage() {
+  const navigate = useNavigate();
   const landmarkerState = usePoseLandmarker();
-  const { videoFileState, selectVideoFile, clearVideoFile } = useVideoFile();
-  const [analysisState, setAnalysisState] = useState<AnalysisState>({ status: "idle" });
+  const { videoFileState, openVideoFile } = useVideoFile();
+  const { session, selectExercise, startSession, saveRecording, saveAnalysis, clearSession } = useWorkoutSession();
+  const analyzeMutation = useAnalyzeRecordingMutation();
+  const [extractionState, setExtractionState] = useState<ExtractionState>({ status: "idle" });
 
-  // New file: check it can be decoded, then start the analysis.
+  const isBusy =
+    videoFileState.status === "checking" || extractionState.status === "extracting" || analyzeMutation.isPending;
+
+  // A new file starts a new session: drop the previous one (and its video URL), then check the file.
   async function handleVideoSelected(videoFile: File): Promise<void> {
-    setAnalysisState({ status: "idle" });
-    const isReadyToAnalyze = await selectVideoFile(videoFile);
-    if (isReadyToAnalyze) setAnalysisState({ status: "processing" });
+    clearSession();
+    analyzeMutation.reset();
+    setExtractionState({ status: "idle" });
+    const acceptedVideo = await openVideoFile(videoFile);
+    if (acceptedVideo === null) return;
+    startSession(acceptedVideo);
+    setExtractionState({ status: "extracting" });
   }
 
-  // Cancel: unmounting PoseExtractionView stops the run; then drop the video.
+  // Send the landmarks to the server; on success show the results.
+  function sendForAnalysis(recording: PoseRecording): void {
+    if (!isAnalyzableExercise(session.exercise)) return;
+    analyzeMutation.mutate(
+      { exercise: session.exercise, recording },
+      {
+        onSuccess: (analysis) => {
+          saveAnalysis(analysis);
+          void navigate("/results");
+        },
+      },
+    );
+  }
+
+  function handleExtractionComplete(extractionResult: ExtractionResult): void {
+    saveRecording(extractionResult.recording, extractionResult.stats);
+    setExtractionState({ status: "idle" });
+    sendForAnalysis(extractionResult.recording);
+  }
+
+  // Cancel: unmounting PoseExtractionView stops the run; then drop the session's video.
   function handleCancel(): void {
-    setAnalysisState({ status: "idle" });
-    clearVideoFile();
+    setExtractionState({ status: "idle" });
+    clearSession();
   }
 
-  const selectedVideo = videoFileState.status === "ready" ? videoFileState.video : null;
+  const hasPreviousResults = session.analysis !== null && !isBusy;
 
   return (
     <section className="space-y-6">
       {/* Intro + privacy note */}
       <div className="space-y-1">
         <h1 className="text-2xl font-bold">Upload or record a set</h1>
-        <p className="text-neutral-400">Your video stays on this device. Pose detection runs in your browser.</p>
+        <p className="text-neutral-400">
+          Your video stays on this device. Only body points are sent for analysis.
+        </p>
       </div>
+
+      {hasPreviousResults && (
+        <Link to="/results" className="block text-sm font-medium text-accent">
+          View results for {session.video?.fileName ?? "your last set"} →
+        </Link>
+      )}
 
       {/* Model status */}
       {landmarkerState.status === "loading" && <p className="text-sm text-neutral-400">Loading pose model…</p>}
@@ -52,10 +90,9 @@ export function UploadPage() {
         <p className="rounded-xl bg-red-950 p-3 text-sm text-red-200">{landmarkerState.errorMessage}</p>
       )}
 
-      <VideoPicker
-        onVideoSelected={(videoFile) => void handleVideoSelected(videoFile)}
-        disabled={analysisState.status === "processing" || videoFileState.status === "checking"}
-      />
+      <ExercisePicker selectedExercise={session.exercise} onSelect={selectExercise} disabled={isBusy} />
+
+      <VideoPicker onVideoSelected={(videoFile) => void handleVideoSelected(videoFile)} disabled={isBusy} />
 
       {/* File checks */}
       {videoFileState.status === "checking" && (
@@ -68,38 +105,47 @@ export function UploadPage() {
         </p>
       )}
 
-      {/* Analysis: waits for the model, then runs while this view is mounted */}
-      {selectedVideo !== null && analysisState.status === "processing" && (
+      {/* Pose extraction: waits for the model, then runs while this view is mounted */}
+      {session.video !== null && extractionState.status === "extracting" && (
         <>
           {(landmarkerState.status === "loading" || landmarkerState.status === "preparing") && (
             <p className="text-sm text-neutral-400">Waiting for the pose model to finish loading…</p>
           )}
           {landmarkerState.status === "ready" && (
             <PoseExtractionView
-              key={selectedVideo.videoUrl}
-              videoUrl={selectedVideo.videoUrl}
+              key={session.video.videoUrl}
+              videoUrl={session.video.videoUrl}
               poseLandmarker={landmarkerState.poseLandmarker}
-              onComplete={(extractionResult) => setAnalysisState({ status: "done", extractionResult })}
-              onError={(errorMessage) => setAnalysisState({ status: "failed", errorMessage })}
+              onComplete={handleExtractionComplete}
+              onError={(errorMessage) => setExtractionState({ status: "failed", errorMessage })}
               onCancel={handleCancel}
             />
           )}
         </>
       )}
 
-      {analysisState.status === "failed" && (
-        <p className="rounded-xl bg-red-950 p-3 text-sm text-red-200">{analysisState.errorMessage}</p>
+      {extractionState.status === "failed" && (
+        <p className="rounded-xl bg-red-950 p-3 text-sm text-red-200">{extractionState.errorMessage}</p>
       )}
 
-      {/* Results: replay with skeleton overlay + summary */}
-      {selectedVideo !== null && analysisState.status === "done" && (
-        <div className="space-y-4">
-          <PoseReplayPlayer videoUrl={selectedVideo.videoUrl} recording={analysisState.extractionResult.recording} />
-          <RecordingSummary
-            fileName={selectedVideo.fileName}
-            recording={analysisState.extractionResult.recording}
-            stats={analysisState.extractionResult.stats}
-          />
+      {/* Server analysis */}
+      {analyzeMutation.isPending && (
+        <p role="status" className="rounded-xl bg-neutral-900 p-4 text-center text-neutral-200">
+          Counting reps and grading your form…
+        </p>
+      )}
+      {analyzeMutation.isError && (
+        <div className="space-y-3 rounded-xl bg-red-950 p-4">
+          <p className="text-sm text-red-200">{describeAnalyzeError(analyzeMutation.error)}</p>
+          {session.recording !== null && (
+            <button
+              type="button"
+              onClick={() => session.recording !== null && sendForAnalysis(session.recording)}
+              className="h-11 w-full rounded-xl bg-red-200 font-medium text-red-950 active:brightness-90"
+            >
+              Try again
+            </button>
+          )}
         </div>
       )}
     </section>
