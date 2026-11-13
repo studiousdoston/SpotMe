@@ -104,9 +104,33 @@ export function computeOverlayState(analysis: AnalysisResult, timeSeconds: numbe
 // The depth meter runs from 0 (standing) to this depth (below knee height).
 export const METER_MAX_DEPTH = 1.2;
 
+// Sizes are multiples of one "unit" = 1% of the DISPLAYED video's short side (CSS px),
+// never less than MIN_UNIT_CSS_PX. With the counter at 6 units and labels at 4 units,
+// a 3 px minimum unit gives exactly the minimum readable sizes: counter 18 px, labels 12 px.
+const UNIT_FRACTION_OF_SHORT_SIDE = 0.01;
+const MIN_UNIT_CSS_PX = 3;
+// The panel should cover at most this share of the displayed video height.
+const MAX_PANEL_HEIGHT_FRACTION = 0.4;
+// When even that is too tall, the meter may shrink down to this (in units) before readability suffers.
+const MIN_METER_HEIGHT_UNITS = 6;
+
+// Sizes in units (multiplied by the unit when computing a layout).
+const SIZE_UNITS = {
+  margin: 3,
+  padding: 2.5,
+  cornerRadius: 2.5,
+  gap: 1.5,
+  counterFontSize: 6,
+  labelFontSize: 4,
+  meterWidth: 4,
+  meterHeight: 14,
+  badgeHeight: 7,
+  badgeFontSize: 4,
+  badgePaddingX: 2.5,
+} as const;
+
+// All sizes are in CANVAS pixels (CSS px × devicePixelRatio), ready to draw with.
 export type OverlayLayout = {
-  // 1% of the frame's short side: every size below is a multiple of it, so the overlay
-  // keeps the same proportions on any resolution, portrait or landscape.
   unit: number;
   margin: number;
   padding: number;
@@ -119,32 +143,59 @@ export type OverlayLayout = {
   badgeHeight: number;
   badgeFontSize: number;
   badgePaddingX: number;
+  // False on very small players: the "Depth 0.82" line is dropped to keep the panel short.
+  showDepthText: boolean;
   // Panel height (its width depends on text, measured when drawing).
   panelHeight: number;
 };
 
-export function computeOverlayLayout(canvasWidth: number, canvasHeight: number): OverlayLayout {
-  const unit = Math.min(canvasWidth, canvasHeight) / 100;
-  const padding = 2.5 * unit;
-  const gap = 1.5 * unit;
-  const counterFontSize = 6 * unit;
-  const labelFontSize = 4 * unit;
-  const meterHeight = 14 * unit;
+// Panel height in units: padding · counter · gap · meter [· gap · depth text] · padding.
+function panelHeightInUnits(meterHeightUnits: number, showDepthText: boolean): number {
+  const depthTextUnits = showDepthText ? SIZE_UNITS.gap + SIZE_UNITS.labelFontSize : 0;
+  return (
+    2 * SIZE_UNITS.padding + SIZE_UNITS.counterFontSize + SIZE_UNITS.gap + meterHeightUnits + depthTextUnits
+  );
+}
+
+// Layout for a video displayed at displayWidth × displayHeight CSS px.
+// Rules, in priority order:
+//   1. readability: counter >= 18 CSS px, labels >= 12 CSS px (unit >= 3 px);
+//   2. the panel covers at most ~40% of the displayed height. If it doesn't fit, first drop the
+//      "Depth 0.82" line, then shrink the meter (down to MIN_METER_HEIGHT_UNITS). If it still
+//      doesn't fit (tiny player), readability wins and the panel is allowed to be taller.
+export function computeOverlayLayout(
+  displayWidth: number,
+  displayHeight: number,
+  devicePixelRatio: number = 1,
+): OverlayLayout {
+  const unitCss = Math.max(MIN_UNIT_CSS_PX, Math.min(displayWidth, displayHeight) * UNIT_FRACTION_OF_SHORT_SIDE);
+  const maxPanelHeightUnits = (MAX_PANEL_HEIGHT_FRACTION * displayHeight) / unitCss;
+
+  let showDepthText = true;
+  let meterHeightUnits: number = SIZE_UNITS.meterHeight;
+  if (panelHeightInUnits(meterHeightUnits, true) > maxPanelHeightUnits) {
+    showDepthText = false;
+    const spareUnits = maxPanelHeightUnits - panelHeightInUnits(0, false);
+    meterHeightUnits = Math.max(MIN_METER_HEIGHT_UNITS, Math.min(SIZE_UNITS.meterHeight, spareUnits));
+  }
+
+  // Convert units to canvas pixels.
+  const unit = unitCss * devicePixelRatio;
   return {
     unit,
-    margin: 3 * unit,
-    padding,
-    cornerRadius: 2.5 * unit,
-    gap,
-    counterFontSize,
-    labelFontSize,
-    meterWidth: 4 * unit,
-    meterHeight,
-    badgeHeight: 7 * unit,
-    badgeFontSize: 4 * unit,
-    badgePaddingX: 2.5 * unit,
-    // padding · counter · gap · meter · gap · depth label · padding
-    panelHeight: padding + counterFontSize + gap + meterHeight + gap + labelFontSize + padding,
+    margin: SIZE_UNITS.margin * unit,
+    padding: SIZE_UNITS.padding * unit,
+    cornerRadius: SIZE_UNITS.cornerRadius * unit,
+    gap: SIZE_UNITS.gap * unit,
+    counterFontSize: SIZE_UNITS.counterFontSize * unit,
+    labelFontSize: SIZE_UNITS.labelFontSize * unit,
+    meterWidth: SIZE_UNITS.meterWidth * unit,
+    meterHeight: meterHeightUnits * unit,
+    badgeHeight: SIZE_UNITS.badgeHeight * unit,
+    badgeFontSize: SIZE_UNITS.badgeFontSize * unit,
+    badgePaddingX: SIZE_UNITS.badgePaddingX * unit,
+    showDepthText,
+    panelHeight: panelHeightInUnits(meterHeightUnits, showDepthText) * unit,
   };
 }
 

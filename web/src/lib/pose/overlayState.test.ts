@@ -13,6 +13,7 @@ import {
   meterFillFraction,
   overlayTotalHeight,
 } from "./overlayState.ts";
+import { fitContain } from "../video/fitContain.ts";
 
 // Builds a rep with good grades at the given times.
 function makeRep(repNumber: number, startSeconds: number, bottomSeconds: number, endSeconds: number): RepResult {
@@ -123,28 +124,64 @@ describe("overlay state", () => {
   });
 });
 
-describe("layout scales with the canvas, portrait and landscape", () => {
-  const canvasSizes = [
-    { name: "portrait phone (fixture)", width: 464, height: 848 },
-    { name: "portrait 1080p", width: 1080, height: 1920 },
-    { name: "landscape 1080p", width: 1920, height: 1080 },
-    { name: "landscape 360p", width: 640, height: 360 },
-    { name: "square", width: 720, height: 720 },
+// Displayed sizes (CSS px) of the picture inside the player, from fitContain:
+// phone = 390 px wide screen → 358 × 591 px player box (16 px side padding, 70vh of 844);
+// desktop = 768 px column → 736 × 630 px player box (70vh of 900).
+const PHONE_BOX = { width: 358, height: 591 };
+const DESKTOP_BOX = { width: 736, height: 630 };
+const PORTRAIT_VIDEO = { width: 464, height: 848 };
+const LANDSCAPE_VIDEO = { width: 1920, height: 1080 };
+
+function displayedSize(box: { width: number; height: number }, video: { width: number; height: number }) {
+  const rect = fitContain(box.width, box.height, video.width, video.height);
+  return { width: rect.width, height: rect.height };
+}
+
+describe("layout is sized from the displayed video, not its resolution", () => {
+  const displayCases = [
+    { name: "portrait video on a phone", display: displayedSize(PHONE_BOX, PORTRAIT_VIDEO), showsDepthText: true },
+    { name: "landscape video on a phone", display: displayedSize(PHONE_BOX, LANDSCAPE_VIDEO), showsDepthText: false },
+    { name: "portrait video on desktop", display: displayedSize(DESKTOP_BOX, PORTRAIT_VIDEO), showsDepthText: true },
+    { name: "landscape video on desktop", display: displayedSize(DESKTOP_BOX, LANDSCAPE_VIDEO), showsDepthText: true },
   ];
 
-  for (const canvasSize of canvasSizes) {
-    test(`${canvasSize.name}: sizes are fractions of the short side and everything fits`, () => {
-      const layout = computeOverlayLayout(canvasSize.width, canvasSize.height);
-      const shortSide = Math.min(canvasSize.width, canvasSize.height);
-      assert.equal(layout.unit, shortSide / 100);
-      assert.ok(Math.abs(layout.counterFontSize / shortSide - 0.06) < 1e-9);
-      // Panel + pop-up stay in the top part of the frame, leaving the body visible.
-      assert.ok(overlayTotalHeight(layout) <= 0.45 * canvasSize.height);
-      assert.ok(layout.panelHeight <= 0.35 * canvasSize.height);
+  for (const displayCase of displayCases) {
+    test(`${displayCase.name}: readable minimums and panel within 40% of the displayed height`, () => {
+      const layout = computeOverlayLayout(displayCase.display.width, displayCase.display.height, 1);
+      assert.ok(layout.counterFontSize >= 18, `counter ${layout.counterFontSize}px`);
+      assert.ok(layout.labelFontSize >= 12, `labels ${layout.labelFontSize}px`);
+      assert.ok(layout.badgeFontSize >= 12, `badges ${layout.badgeFontSize}px`);
+      assert.ok(
+        layout.panelHeight <= 0.4 * displayCase.display.height + 1e-9,
+        `panel ${layout.panelHeight}px of ${displayCase.display.height}px`,
+      );
+      assert.equal(layout.showDepthText, displayCase.showsDepthText);
     });
   }
 
-  test("rotating the video keeps the same overlay size", () => {
-    assert.deepEqual(computeOverlayLayout(464, 848), computeOverlayLayout(848, 464));
+  test("very small player: readability wins (text minimums kept, depth line dropped, meter shrunk)", () => {
+    const layout = computeOverlayLayout(200, 112, 1);
+    assert.equal(layout.counterFontSize, 18);
+    assert.equal(layout.labelFontSize, 12);
+    assert.equal(layout.showDepthText, false);
+    assert.equal(layout.meterHeight, 6 * layout.unit);
+    // Taller than 40% here is accepted: text size takes priority.
+    assert.ok(layout.panelHeight > 0.4 * 112);
+  });
+
+  test("large player: sizes grow with the displayed short side (1% unit)", () => {
+    const layout = computeOverlayLayout(1600, 900, 1);
+    assert.equal(layout.unit, 9);
+    assert.equal(layout.counterFontSize, 54);
+    assert.equal(layout.showDepthText, true);
+    assert.ok(overlayTotalHeight(layout) <= 0.45 * 900);
+  });
+
+  test("devicePixelRatio scales canvas pixels but not the layout decisions", () => {
+    const layoutAt1x = computeOverlayLayout(358, 201, 1);
+    const layoutAt3x = computeOverlayLayout(358, 201, 3);
+    assert.equal(layoutAt3x.showDepthText, layoutAt1x.showDepthText);
+    assert.ok(Math.abs(layoutAt3x.counterFontSize - 3 * layoutAt1x.counterFontSize) < 1e-9);
+    assert.ok(Math.abs(layoutAt3x.panelHeight - 3 * layoutAt1x.panelHeight) < 1e-9);
   });
 });

@@ -47,7 +47,7 @@ function drawPanel(context: CanvasRenderingContext2D, overlayState: OverlayState
   setFont(context, layout.counterFontSize, 700);
   const counterWidth = context.measureText(counterText).width;
   setFont(context, layout.labelFontSize, 500);
-  const depthTextWidth = context.measureText(depthText).width;
+  const depthTextWidth = layout.showDepthText ? context.measureText(depthText).width : 0;
   const meterRowWidth = layout.meterWidth + tickLabelGap + context.measureText(tickLabelText).width;
   const panelWidth = 2 * padding + Math.max(counterWidth, depthTextWidth, meterRowWidth);
 
@@ -105,10 +105,12 @@ function drawPanel(context: CanvasRenderingContext2D, overlayState: OverlayState
   context.fillText(tickLabelText, contentX + layout.meterWidth + tickLabelGap, tickY);
   cursorY = meterBottom + gap;
 
-  // Live depth value.
-  context.textBaseline = "top";
-  context.fillStyle = OVERLAY_COLORS.text;
-  context.fillText(depthText, contentX, cursorY);
+  // Live depth value (dropped on very small players to keep the panel short).
+  if (layout.showDepthText) {
+    context.textBaseline = "top";
+    context.fillStyle = OVERLAY_COLORS.text;
+    context.fillText(depthText, contentX, cursorY);
+  }
 
   return margin + layout.panelHeight;
 }
@@ -153,13 +155,21 @@ function drawGradePopup(
 }
 
 // Draws the overlay (panel + pop-up) on top of whatever is already on the canvas.
+// devicePixelRatio = canvas pixels per displayed CSS pixel: the layout is sized for the size the
+// video is shown at (readable on a phone), then drawn at full canvas resolution (sharp).
+// For a video export, pass the video size as the canvas size and 1.
 export function drawOverlay(
   context: CanvasRenderingContext2D,
   overlayState: OverlayState,
   canvasWidth: number,
   canvasHeight: number,
+  devicePixelRatio: number = 1,
 ): void {
-  const layout = computeOverlayLayout(canvasWidth, canvasHeight);
+  const layout = computeOverlayLayout(
+    canvasWidth / devicePixelRatio,
+    canvasHeight / devicePixelRatio,
+    devicePixelRatio,
+  );
   context.save();
   const panelBottom = drawPanel(context, overlayState, layout);
   drawGradePopup(context, overlayState, layout, panelBottom);
@@ -174,15 +184,26 @@ type RenderReplayFrameOptions = {
   analysis: AnalysisResult | null | undefined;
   timeSeconds: number;
   showOverlay: boolean;
+  // The canvas covers exactly the displayed video picture.
   canvasWidth: number;
   canvasHeight: number;
+  // Canvas pixels per CSS pixel (window.devicePixelRatio in the browser, 1 for an export).
+  devicePixelRatio: number;
 };
 
 // Clears the canvas and draws everything for this video time: the skeleton (tinted by the
 // active rep's depth grade when the overlay is on) and the coaching overlay.
 export function renderReplayFrame(
   context: CanvasRenderingContext2D,
-  { recording, analysis, timeSeconds, showOverlay, canvasWidth, canvasHeight }: RenderReplayFrameOptions,
+  {
+    recording,
+    analysis,
+    timeSeconds,
+    showOverlay,
+    canvasWidth,
+    canvasHeight,
+    devicePixelRatio,
+  }: RenderReplayFrameOptions,
 ): void {
   context.clearRect(0, 0, canvasWidth, canvasHeight);
   const overlayState = showOverlay && analysis ? computeOverlayState(analysis, timeSeconds) : null;
@@ -195,5 +216,7 @@ export function renderReplayFrame(
     drawSkeleton(context, nearestFrame.landmarks, canvasWidth, canvasHeight, skeletonColor);
   }
 
-  if (overlayState !== null) drawOverlay(context, overlayState, canvasWidth, canvasHeight);
+  if (overlayState !== null) {
+    drawOverlay(context, overlayState, canvasWidth, canvasHeight, devicePixelRatio);
+  }
 }
