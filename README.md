@@ -97,6 +97,20 @@ I trained a small **1D CNN** (PyTorch, ~28k weights) on 30-frame windows of squa
 
 All notebooks run on **Kaggle (CPU only)**. MediaPipe doesn't use the GPU here.
 
+## 💻 Running locally
+
+Start the API server (FastAPI, port 8000):
+
+```bash
+cd server && source .venv/bin/activate && uvicorn main:app --reload --port 8000
+```
+
+In a second terminal, start the web app (Vite proxies `/api` to the server):
+
+```bash
+cd web && npm run dev
+```
+
 ## 🛠️ Tech stack
 
 **Now:** Python · MediaPipe Pose Landmarker · NumPy / pandas · SciPy · scikit-learn · PyTorch · OpenCV · ffmpeg · Kaggle
