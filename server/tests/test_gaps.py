@@ -94,7 +94,7 @@ def test_curl_with_gap_is_incomplete() -> None:
     for arm_result in (result.arms.left, result.arms.right):
         assert arm_result.rep_count is None
         assert arm_result.reps == []
-        assert arm_result.elbow_angle_signal is None
+        assert arm_result.wrist_height_signal is None
 
 
 def test_curl_fixture_with_two_gaps_names_both(curl_front_recording: dict[str, Any]) -> None:

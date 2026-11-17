@@ -65,17 +65,17 @@ function squatPanelContent(overlayState: SquatOverlayState): PanelContent {
   };
 }
 
-// Curl: "L 3 / 5 · R 3 / 5" and "Elbow L 145° · R 170°" (a hidden arm shows "–").
+// Curl: "L 3 / 5 · R 3 / 5" and "Height L 85% · R 0%" (a hidden arm shows "–").
 function curlPanelContent(overlayState: CurlOverlayState): PanelContent {
   const describeCount = (armState: CurlArmOverlayState): string =>
     armState === null ? "–" : `${armState.completedRepCount} / ${armState.totalRepCount}`;
-  const describeAngle = (armState: CurlArmOverlayState): string =>
-    armState?.currentAngle == null ? "–" : `${Math.round(armState.currentAngle)}°`;
+  const describeHeight = (armState: CurlArmOverlayState): string =>
+    armState?.currentHeightPercent == null ? "–" : `${Math.round(armState.currentHeightPercent)}%`;
   const { left, right } = overlayState.arms;
   return {
     counterText: `L ${describeCount(left)} · R ${describeCount(right)}`,
     meter: null,
-    detailText: `Elbow L ${describeAngle(left)} · R ${describeAngle(right)}`,
+    detailText: `Height L ${describeHeight(left)} · R ${describeHeight(right)}`,
   };
 }
 

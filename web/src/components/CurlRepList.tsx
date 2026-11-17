@@ -12,7 +12,7 @@ function formatSeconds(seconds: number): string {
   return `${seconds.toFixed(1)} s`;
 }
 
-// One group per arm; one tappable row per curl: number, full/partial badge, top elbow angle.
+// One group per arm; one tappable row per curl: number, full/partial badge, curl height.
 export function CurlRepList({ analysis, onSelectRep }: CurlRepListProps) {
   return (
     <div className="space-y-4">
@@ -34,7 +34,7 @@ export function CurlRepList({ analysis, onSelectRep }: CurlRepListProps) {
                   <button
                     type="button"
                     onClick={() => onSelectRep(rep)}
-                    aria-label={`${armName} curl ${rep.repNumber}: ${rep.rangeFeedback.text}, top angle ${Math.round(rep.topAngle)} degrees. Play from ${formatSeconds(rep.startSeconds)}.`}
+                    aria-label={`${armName} curl ${rep.repNumber}: ${rep.rangeFeedback.text}, curl height ${Math.round(rep.curlHeightPercent)} percent. Play from ${formatSeconds(rep.startSeconds)}.`}
                     className="flex w-full items-center gap-3 rounded-xl bg-neutral-900 p-3 text-left active:bg-neutral-800"
                   >
                     <span className="flex size-10 shrink-0 items-center justify-center rounded-full bg-neutral-800 text-lg font-bold tabular-nums">
@@ -45,7 +45,7 @@ export function CurlRepList({ analysis, onSelectRep }: CurlRepListProps) {
                         <FeedbackBadge feedback={rep.rangeFeedback} />
                       </span>
                       <span className="block text-sm text-neutral-400 tabular-nums">
-                        Top angle {Math.round(rep.topAngle)}°
+                        Curl height {Math.round(rep.curlHeightPercent)}%
                       </span>
                     </span>
                     <span aria-hidden="true" className="text-neutral-500">

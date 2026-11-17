@@ -1,6 +1,6 @@
 import { CurlCountSummary } from "@/components/CurlCountSummary";
 import { CurlRepList } from "@/components/CurlRepList";
-import { ElbowAngleChart } from "@/components/ElbowAngleChart";
+import { CurlHeightChart } from "@/components/CurlHeightChart";
 import { WarningList } from "@/components/WarningList";
 import type { CurlAnalysisResult } from "@/types/analysis";
 
@@ -10,7 +10,7 @@ type CurlResultsProps = {
   onSeek: (timeSeconds: number) => void;
 };
 
-// Curl results: per-arm counts, warnings, curls grouped by arm, and both elbow angles over time.
+// Curl results: per-arm counts, warnings, curls grouped by arm, and both arms' curl height over time.
 export function CurlResults({ analysis, onSeek }: CurlResultsProps) {
   const hasReps = analysis.arms.left.reps.length > 0 || analysis.arms.right.reps.length > 0;
 
@@ -27,7 +27,7 @@ export function CurlResults({ analysis, onSeek }: CurlResultsProps) {
         </div>
       )}
 
-      <ElbowAngleChart analysis={analysis} />
+      <CurlHeightChart analysis={analysis} />
     </>
   );
 }

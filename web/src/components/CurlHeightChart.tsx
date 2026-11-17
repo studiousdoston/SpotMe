@@ -10,10 +10,11 @@ import {
   YAxis,
 } from "recharts";
 import { ARM_CHART_COLORS, ARM_NAMES, ARM_SIDES } from "@/lib/curlArms";
-import type { ArmSide, CurlAnalysisResult } from "@/types/analysis";
+import { curlHeightPercent } from "@/lib/pose/overlayState";
+import type { ArmSide, CurlAnalysisResult, CurlArmResult } from "@/types/analysis";
 
-// Same threshold as the server's FULL_CURL_MAX_ANGLE (server/analysis/curl.py).
-const FULL_CURL_MAX_ANGLE = 70;
+// Same threshold as the server's FULL_CURL_MIN_PERCENT (server/analysis/curl.py).
+const FULL_CURL_MIN_PERCENT = 70;
 
 // Quiet grays for everything that isn't data (same as DepthChart).
 const CHART_COLORS = {
@@ -24,25 +25,32 @@ const CHART_COLORS = {
   tooltipBackground: "#171717", // neutral-900
 } as const;
 
-// One object per time point, with each arm's angle (null when unknown or the arm is hidden).
-type ElbowAngleChartPoint = {
+// One object per time point, with each arm's curl height % (null when unknown or the arm is hidden).
+type CurlHeightChartPoint = {
   timeSeconds: number;
 } & Record<ArmSide, number | null>;
 
-// Both arms' elbow angles over time (180° = straight arm), with a dashed "full curl" line at 70°.
-export function ElbowAngleChart({ analysis }: { analysis: CurlAnalysisResult }) {
+// One arm's curl height % at a sample (null when the arm wasn't counted or the value is unknown).
+function armHeightPercentAt(armResult: CurlArmResult, pointIndex: number): number | null {
+  const wristHeight = armResult.wristHeightSignal?.values[pointIndex] ?? null;
+  if (wristHeight === null || armResult.hangingBaseline === null) return null;
+  return curlHeightPercent(wristHeight, armResult.hangingBaseline);
+}
+
+// Both arms' curl height over time (0% = arm hanging, 100% = wrist at shoulder level),
+// with a dashed "full curl" line at 70%.
+export function CurlHeightChart({ analysis }: { analysis: CurlAnalysisResult }) {
   // Arms that were counted (a hidden arm has no signal and gets no line).
-  const chartedSides = ARM_SIDES.filter((armSide) => analysis.arms[armSide].elbowAngleSignal !== null);
+  const chartedSides = ARM_SIDES.filter((armSide) => analysis.arms[armSide].wristHeightSignal !== null);
 
   // Both signals come from the same server timeline, so their samples line up index by index.
-  const chartPoints = useMemo<ElbowAngleChartPoint[]>(() => {
-    const leftSignal = analysis.arms.left.elbowAngleSignal;
-    const rightSignal = analysis.arms.right.elbowAngleSignal;
-    const timesSeconds = (leftSignal ?? rightSignal)?.timesSeconds ?? [];
+  const chartPoints = useMemo<CurlHeightChartPoint[]>(() => {
+    const { left: leftArm, right: rightArm } = analysis.arms;
+    const timesSeconds = (leftArm.wristHeightSignal ?? rightArm.wristHeightSignal)?.timesSeconds ?? [];
     return timesSeconds.map((timeSeconds, pointIndex) => ({
       timeSeconds,
-      left: leftSignal?.values[pointIndex] ?? null,
-      right: rightSignal?.values[pointIndex] ?? null,
+      left: armHeightPercentAt(leftArm, pointIndex),
+      right: armHeightPercentAt(rightArm, pointIndex),
     }));
   }, [analysis]);
 
@@ -51,8 +59,8 @@ export function ElbowAngleChart({ analysis }: { analysis: CurlAnalysisResult }) 
   return (
     <figure className="space-y-2">
       <figcaption className="space-y-0.5">
-        <span className="block font-semibold">Elbow angle over time</span>
-        <span className="block text-sm text-neutral-400">180° = straight arm. Below the dashed line = full curl.</span>
+        <span className="block font-semibold">Curl height over time</span>
+        <span className="block text-sm text-neutral-400">0% = arm hanging, 100% = wrist at shoulder level. Above the dashed line = full curl.</span>
       </figcaption>
 
       {/* Legend: the swatch carries the color, the text stays neutral */}
@@ -78,18 +86,18 @@ export function ElbowAngleChart({ analysis }: { analysis: CurlAnalysisResult }) 
               tick={{ fill: CHART_COLORS.mutedText, fontSize: 12 }}
             />
             <YAxis
-              domain={[0, 180]}
-              ticks={[0, 45, 90, 135, 180]}
-              tickFormatter={(angleDegrees: number) => `${angleDegrees}°`}
+              domain={[0, 100]}
+              ticks={[0, 25, 50, 75, 100]}
+              tickFormatter={(heightPercent: number) => `${heightPercent}%`}
               stroke={CHART_COLORS.axis}
               tick={{ fill: CHART_COLORS.mutedText, fontSize: 12 }}
             />
 
             <ReferenceLine
-              y={FULL_CURL_MAX_ANGLE}
+              y={FULL_CURL_MIN_PERCENT}
               stroke={CHART_COLORS.mutedText}
               strokeDasharray="4 4"
-              label={{ value: "full curl", position: "insideBottomLeft", fill: CHART_COLORS.mutedText, fontSize: 12 }}
+              label={{ value: "full curl", position: "insideTopLeft", fill: CHART_COLORS.mutedText, fontSize: 12 }}
             />
 
             {/* Crosshair + both arms' values on hover/tap */}
@@ -103,8 +111,8 @@ export function ElbowAngleChart({ analysis }: { analysis: CurlAnalysisResult }) 
               labelStyle={{ color: CHART_COLORS.mutedText }}
               itemStyle={{ color: "#f5f5f5" }}
               labelFormatter={(timeSeconds) => `${Number(timeSeconds).toFixed(2)} s`}
-              formatter={(angleDegrees, armName) => [
-                typeof angleDegrees === "number" ? `${Math.round(angleDegrees)}°` : "–",
+              formatter={(heightPercent, armName) => [
+                typeof heightPercent === "number" ? `${Math.round(heightPercent)}%` : "–",
                 armName,
               ]}
             />

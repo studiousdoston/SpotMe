@@ -8,6 +8,7 @@ import {
   computeOverlayLayout,
   computeOverlayState,
   countCompletedReps,
+  curlHeightPercent,
   CURL_PANEL_SHAPE,
   findActiveRep,
   findRecentlyFinishedRep,
@@ -135,15 +136,15 @@ describe("squat overlay state", () => {
   });
 });
 
-// Builds a curl at the given times with a full/partial grade from its top angle (<= 70 = full).
-function makeCurl(repNumber: number, startSeconds: number, topAngle: number): CurlRepResult {
-  const isFull = topAngle <= 70;
+// Builds a curl at the given times with a full/partial grade from its curl height (>= 70% = full).
+function makeCurl(repNumber: number, startSeconds: number, curlHeightPercent: number): CurlRepResult {
+  const isFull = curlHeightPercent >= 70;
   return {
     repNumber,
     startSeconds,
     peakSeconds: startSeconds + 0.5,
     endSeconds: startSeconds + 1,
-    topAngle,
+    curlHeightPercent,
     rangeFeedback: isFull
       ? { code: "full_curl", text: "Full curl" }
       : { code: "partial_curl", text: "Partial curl, squeeze all the way up" },
@@ -162,14 +163,17 @@ const CURL_ANALYSIS: CurlAnalysisResult = {
     left: {
       visible: true,
       repCount: 2,
-      reps: [makeCurl(1, 0, 40), makeCurl(2, 3, 45)],
-      elbowAngleSignal: { timesSeconds: [0, 0.5, 1], values: [170, 40, 170] },
+      reps: [makeCurl(1, 0, 100), makeCurl(2, 3, 95)],
+      // Hanging at -2 upper-arm lengths, up to shoulder level (0) at 0.5 s.
+      wristHeightSignal: { timesSeconds: [0, 0.5, 1], values: [-2, 0, -2] },
+      hangingBaseline: -2,
     },
     right: {
       visible: true,
       repCount: 2,
-      reps: [makeCurl(1, 1.5, 100), makeCurl(2, 4.5, 50)],
-      elbowAngleSignal: { timesSeconds: [0, 0.5, 1], values: [170, 170, 170] },
+      reps: [makeCurl(1, 1.5, 40), makeCurl(2, 4.5, 90)],
+      wristHeightSignal: { timesSeconds: [0, 0.5, 1], values: [-2, -2, -2] },
+      hangingBaseline: -2,
     },
   },
 };
@@ -183,11 +187,18 @@ describe("curl overlay state", () => {
     assert.equal(overlayState.arms.right?.completedRepCount, 1);
   });
 
-  test("live elbow angle per arm", () => {
+  test("live curl height % per arm", () => {
     const overlayState = computeOverlayState(CURL_ANALYSIS, 0.25);
     assert.ok(overlayState !== null && overlayState.exercise === "curl");
-    assert.equal(overlayState.arms.left?.currentAngle, 105);
-    assert.equal(overlayState.arms.right?.currentAngle, 170);
+    // Half way from hanging (-2) to the shoulder (0) = 50%.
+    assert.equal(overlayState.arms.left?.currentHeightPercent, 50);
+    assert.equal(overlayState.arms.right?.currentHeightPercent, 0);
+  });
+
+  test("curl height % is relative to the arm's hanging baseline, clamped to 0–100", () => {
+    assert.equal(curlHeightPercent(-0.9, -1.8), 50);
+    assert.equal(curlHeightPercent(0.3, -1.8), 100);
+    assert.equal(curlHeightPercent(-2.2, -1.8), 0);
   });
 
   test("tints only the curling arm, in the curl's grade", () => {
@@ -222,7 +233,7 @@ describe("curl overlay state", () => {
       ...CURL_ANALYSIS,
       arms: {
         ...CURL_ANALYSIS.arms,
-        right: { visible: false, repCount: null, reps: [], elbowAngleSignal: null },
+        right: { visible: false, repCount: null, reps: [], wristHeightSignal: null, hangingBaseline: null },
       },
     };
     const overlayState = computeOverlayState(hiddenRight, 1);

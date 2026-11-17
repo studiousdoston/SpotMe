@@ -70,11 +70,11 @@ export type ArmSide = "left" | "right";
 export type CurlRepResult = {
   repNumber: number;
   startSeconds: number;
-  // Moment of the smallest elbow angle (top of the curl).
+  // Moment the wrist was highest (top of the curl).
   peakSeconds: number;
   endSeconds: number;
-  // Smallest elbow angle in degrees (<= 70 = full curl).
-  topAngle: number;
+  // How far the wrist rose: 0 = arm hanging, 100 = wrist at shoulder level (>= 70 = full curl).
+  curlHeightPercent: number;
   rangeFeedback: Feedback<RangeFeedbackCode>;
 };
 
@@ -84,8 +84,11 @@ export type CurlArmResult = {
   // null = not counted (hidden arm, or the set wasn't counted). 0 = counted, no curls found.
   repCount: number | null;
   reps: CurlRepResult[];
-  // Smoothed elbow angle in degrees (null when this arm wasn't counted).
-  elbowAngleSignal: TimeSeries | null;
+  // Smoothed wrist height in upper-arm lengths: 0 = shoulder level, about -1.8 = hanging
+  // (null when this arm wasn't counted).
+  wristHeightSignal: TimeSeries | null;
+  // This arm's hanging wrist height (= 0% curl height). null when not counted.
+  hangingBaseline: number | null;
 };
 
 export type CurlAnalysisResult = {

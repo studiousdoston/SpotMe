@@ -4,7 +4,7 @@
 //
 // Shared by every exercise: rep timing (counter, active rep, grade pop-up), signal
 // interpolation, skeleton tints and the panel layout. Each exercise adds its own
-// state on top (squat: depth meter; curl: per-arm counters and elbow angles).
+// state on top (squat: depth meter; curl: per-arm counters and curl heights).
 
 import type {
   AnalysisResult,
@@ -73,8 +73,8 @@ export type CurlArmOverlayState = {
   // A curl counts once the playhead has passed its top.
   completedRepCount: number;
   totalRepCount: number;
-  // Elbow angle in degrees at the playhead (null when unknown).
-  currentAngle: number | null;
+  // Curl height % at the playhead: 0 = arm hanging, 100 = wrist at shoulder level (null when unknown).
+  currentHeightPercent: number | null;
 } | null;
 
 export type CurlOverlayState = SharedOverlayState & {
@@ -190,15 +190,28 @@ function computeSquatOverlayState(analysis: SquatAnalysisResult, timeSeconds: nu
 const ARM_LABELS: Record<ArmSide, string> = { left: "L", right: "R" };
 const ARM_SIDES: ArmSide[] = ["left", "right"];
 
+// Wrist height (upper-arm lengths) → curl height %: the arm's hanging baseline is 0%, shoulder
+// level (0) is 100%, clamped to 0–100. Same formula as the server's curl_height_percent.
+export function curlHeightPercent(wristHeight: number, hangingBaseline: number): number {
+  if (hangingBaseline >= 0) return 0;
+  const percent = ((wristHeight - hangingBaseline) / (0 - hangingBaseline)) * 100;
+  return Math.min(100, Math.max(0, percent));
+}
+
 function computeCurlArmOverlayState(armResult: CurlArmResult, timeSeconds: number): CurlArmOverlayState {
   if (armResult.repCount === null) return null;
+  const { wristHeightSignal, hangingBaseline } = armResult;
+  const currentWristHeight = wristHeightSignal ? interpolateSignal(wristHeightSignal, timeSeconds) : null;
   return {
     completedRepCount: countRepsPast(
       armResult.reps.map((rep) => rep.peakSeconds),
       timeSeconds,
     ),
     totalRepCount: armResult.repCount,
-    currentAngle: armResult.elbowAngleSignal ? interpolateSignal(armResult.elbowAngleSignal, timeSeconds) : null,
+    currentHeightPercent:
+      currentWristHeight === null || hangingBaseline === null
+        ? null
+        : curlHeightPercent(currentWristHeight, hangingBaseline),
   };
 }
 

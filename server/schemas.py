@@ -104,15 +104,15 @@ class SquatAnalyzeResponse(CamelModel):
 
 
 class CurlRepResult(CamelModel):
-    """One counted curl of one arm, graded by how far the elbow bent."""
+    """One counted curl of one arm, graded by how high the wrist rose."""
 
     rep_number: int
     start_seconds: float
-    # Moment of the smallest elbow angle (the top of the curl).
+    # Moment the wrist was highest (the top of the curl).
     peak_seconds: float
     end_seconds: float
-    # Smallest elbow angle in the rep, in degrees (smaller = fuller curl).
-    top_angle: float
+    # How far the wrist rose: 0 = arm hanging, 100 = wrist at shoulder level.
+    curl_height_percent: float
     range_feedback: Feedback
 
 
@@ -124,8 +124,11 @@ class CurlArmResult(CamelModel):
     # None = not counted (arm hidden, or the set wasn't counted at all). 0 = counted, no curls found.
     rep_count: int | None
     reps: list[CurlRepResult]
-    # Smoothed elbow angle in degrees (None when this arm wasn't counted).
-    elbow_angle_signal: TimeSeries | None
+    # Smoothed wrist height in upper-arm lengths: 0 = shoulder level, about -1.8 = hanging
+    # (None when this arm wasn't counted).
+    wrist_height_signal: TimeSeries | None
+    # The arm's hanging wrist height (0% curl height); 100% is 0. None when not counted.
+    hanging_baseline: float | None
 
 
 class CurlArms(CamelModel):

@@ -37,13 +37,20 @@ def test_analyze_curl_returns_per_arm_response(curl_front_recording: dict[str, A
     # camelCase keys, and the body parses back into the curl response model.
     assert response_json["exercise"] == "curl"
     assert {"status", "message", "warnings", "bodyTurnAngle", "arms"} <= response_json.keys()
-    assert {"visible", "repCount", "reps", "elbowAngleSignal"} <= response_json["arms"]["left"].keys()
+    assert {"visible", "repCount", "reps", "wristHeightSignal", "hangingBaseline"} <= response_json["arms"][
+        "left"
+    ].keys()
     parsed_response = CurlAnalyzeResponse.model_validate(response_json)
     assert parsed_response.status == "ok"
     first_rep = response_json["arms"]["left"]["reps"][0]
-    assert {"repNumber", "startSeconds", "peakSeconds", "endSeconds", "topAngle", "rangeFeedback"} <= (
-        first_rep.keys()
-    )
+    assert {
+        "repNumber",
+        "startSeconds",
+        "peakSeconds",
+        "endSeconds",
+        "curlHeightPercent",
+        "rangeFeedback",
+    } <= (first_rep.keys())
     assert {"code", "text"} == first_rep["rangeFeedback"].keys()
 
 

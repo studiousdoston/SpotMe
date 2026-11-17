@@ -11,7 +11,7 @@ from analysis.curl import (
     analyze_curl,
 )
 from analysis.timeline import build_landmark_timeline
-from schemas import AnalyzeRequest, CurlAnalyzeResponse
+from schemas import AnalyzeRequest, CurlAnalyzeResponse, CurlRepResult
 from tests.conftest import build_curl_recording
 
 
@@ -35,20 +35,40 @@ def test_synthetic_five_full_curls_per_arm() -> None:
         assert arm_result.visible
         assert arm_result.rep_count == 5
         assert [rep.range_feedback.code for rep in arm_result.reps] == ["full_curl"] * 5
-        # Smoothing slightly softens the 40° top, but it stays a clear full curl.
-        assert all(rep.top_angle < 50 for rep in arm_result.reps)
-        assert arm_result.elbow_angle_signal is not None
+        # Smoothing barely softens the top: the wrist reaches shoulder level.
+        assert all(rep.curl_height_percent > 95 for rep in arm_result.reps)
+        assert arm_result.wrist_height_signal is not None
+        # Hanging = (120 + 110) / 120 upper-arm lengths below the shoulder.
+        assert arm_result.hanging_baseline == pytest.approx(-230 / 120, abs=0.01)
     assert result.message == "Left 5 · Right 5"
 
 
 def test_synthetic_partial_curls_are_flagged() -> None:
-    result = run_curl_analysis(build_curl_recording(curls_per_arm=3, top_angle=110))
+    # Wrist rises only half way to the shoulder: still a curl (0.96 upper-arm lengths), but partial.
+    result = run_curl_analysis(build_curl_recording(curls_per_arm=3, top_height_percent=50))
 
     assert result.arms.left.rep_count == 3
     assert result.arms.right.rep_count == 3
-    assert {rep.range_feedback.code for rep in result.arms.left.reps + result.arms.right.reps} == {
-        "partial_curl"
-    }
+    all_reps = result.arms.left.reps + result.arms.right.reps
+    assert {rep.range_feedback.code for rep in all_reps} == {"partial_curl"}
+    assert all(rep.curl_height_percent == pytest.approx(50, abs=3) for rep in all_reps)
+
+
+@pytest.mark.parametrize(("top_height_percent", "expected_code"), [(75, "full_curl"), (65, "partial_curl")])
+def test_full_curl_needs_70_percent_height(top_height_percent: float, expected_code: str) -> None:
+    result = run_curl_analysis(build_curl_recording(curls_per_arm=2, top_height_percent=top_height_percent))
+
+    for arm_result in (result.arms.left, result.arms.right):
+        assert arm_result.rep_count == 2
+        assert [rep.range_feedback.code for rep in arm_result.reps] == [expected_code] * 2
+
+
+def test_small_wrist_wobble_is_not_a_curl() -> None:
+    # 15% of 1.92 upper-arm lengths = 0.29: under the 0.4 minimum rise.
+    result = run_curl_analysis(build_curl_recording(curls_per_arm=3, top_height_percent=15))
+
+    assert result.arms.left.rep_count == 0
+    assert result.arms.right.rep_count == 0
 
 
 def test_hidden_arm_is_not_counted() -> None:
@@ -61,7 +81,8 @@ def test_hidden_arm_is_not_counted() -> None:
     # Hidden = null, never 0.
     assert result.arms.right.rep_count is None
     assert result.arms.right.reps == []
-    assert result.arms.right.elbow_angle_signal is None
+    assert result.arms.right.wrist_height_signal is None
+    assert result.arms.right.hanging_baseline is None
     assert result.message == "Left 5 · Right hidden"
     assert any("right arm was hidden" in warning for warning in result.warnings)
 
@@ -114,22 +135,34 @@ def test_curl_front_fixture_is_front_view(curl_front_recording: dict[str, Any]) 
     assert result.arms.right.visible
 
 
-def test_curl_front_fixture_counts_right_6_all_full(curl_front_recording: dict[str, Any]) -> None:
-    result = run_curl_analysis(curl_front_recording)
-
-    assert result.arms.right.rep_count == 6
-    assert [rep.range_feedback.code for rep in result.arms.right.reps] == ["full_curl"] * 6
+def describe_reps(reps: list[CurlRepResult]) -> list[tuple[int, str]]:
+    """(rounded curl height, grade code) per rep, for readable assertion failures."""
+    return [(round(rep.curl_height_percent), rep.range_feedback.code) for rep in reps]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Counts 4, not 5: at ~12.2 s the left forearm comes straight toward the camera, so the 2D elbow "
-        "angle only dips 172° → 164° (10°), under the notebook's 25° minimum. A 2D front-view limit, "
-        "not a threshold to tune. Remove this marker if the counter learns to handle it."
-    ),
-)
-def test_curl_front_fixture_counts_left_5(curl_front_recording: dict[str, Any]) -> None:
-    result = run_curl_analysis(curl_front_recording)
+def test_curl_front_fixture_left_5_reps_3_and_4_partial(curl_front_recording: dict[str, Any]) -> None:
+    left_arm = run_curl_analysis(curl_front_recording).arms.left
 
-    assert result.arms.left.rep_count == 5
+    assert left_arm.rep_count == 5
+    assert describe_reps(left_arm.reps) == [
+        (100, "full_curl"),
+        (100, "full_curl"),
+        (57, "partial_curl"),
+        (32, "partial_curl"),
+        (100, "full_curl"),
+    ]
+
+
+def test_curl_front_fixture_right_6_rep_5_partial(curl_front_recording: dict[str, Any]) -> None:
+    right_arm = run_curl_analysis(curl_front_recording).arms.right
+
+    assert right_arm.rep_count == 6
+    # Rep 4 (~79%) is a borderline full curl; only rep 5 is clearly partial.
+    assert describe_reps(right_arm.reps) == [
+        (94, "full_curl"),
+        (91, "full_curl"),
+        (89, "full_curl"),
+        (79, "full_curl"),
+        (48, "partial_curl"),
+        (99, "full_curl"),
+    ]
