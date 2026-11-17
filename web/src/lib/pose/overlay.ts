@@ -8,12 +8,20 @@ import { findNearestFrame } from "@/lib/pose/findNearestFrame";
 import {
   computeOverlayLayout,
   computeOverlayState,
+  CURL_PANEL_SHAPE,
   meterFillFraction,
+  SQUAT_PANEL_SHAPE,
+  type CurlArmOverlayState,
+  type CurlOverlayState,
+  type GradePopup,
   type OverlayLayout,
   type OverlayState,
+  type PopupBadge,
+  type SkeletonTint,
+  type SquatOverlayState,
 } from "@/lib/pose/overlayState";
 import { drawSkeleton, SKELETON_LINE_COLOR } from "@/lib/pose/skeleton";
-import type { AnalysisResult, Feedback } from "@/types/analysis";
+import type { AnalysisResult } from "@/types/analysis";
 import type { PoseRecording } from "@/types/pose";
 
 // Same threshold as the server's depth_grade.
@@ -34,22 +42,57 @@ function setFont(context: CanvasRenderingContext2D, fontSize: number, fontWeight
   context.font = `${fontWeight} ${fontSize}px ${FONT_FAMILY}`;
 }
 
-// ---- Panel: rep counter, depth meter, depth value ----
+// ---- Panel content per exercise ----
 
-function drawPanel(context: CanvasRenderingContext2D, overlayState: OverlayState, layout: OverlayLayout): number {
+// What the panel shows: a big counter line, an optional meter, and one detail line.
+type PanelContent = {
+  counterText: string;
+  meter: { fillFraction: number; tickFraction: number; tickLabel: string } | null;
+  detailText: string;
+};
+
+// Squat: "Rep 3 / 6", depth meter with a "good" tick, "Depth 0.82".
+function squatPanelContent(overlayState: SquatOverlayState): PanelContent {
+  const { currentDepth } = overlayState;
+  return {
+    counterText: `Rep ${overlayState.completedRepCount} / ${overlayState.totalRepCount}`,
+    meter: {
+      fillFraction: currentDepth === null ? 0 : meterFillFraction(currentDepth),
+      tickFraction: meterFillFraction(GOOD_DEPTH_THRESHOLD),
+      tickLabel: "good",
+    },
+    detailText: `Depth ${currentDepth === null ? "–" : formatDepth(currentDepth, 2)}`,
+  };
+}
+
+// Curl: "L 3 / 5 · R 3 / 5" and "Elbow L 145° · R 170°" (a hidden arm shows "–").
+function curlPanelContent(overlayState: CurlOverlayState): PanelContent {
+  const describeCount = (armState: CurlArmOverlayState): string =>
+    armState === null ? "–" : `${armState.completedRepCount} / ${armState.totalRepCount}`;
+  const describeAngle = (armState: CurlArmOverlayState): string =>
+    armState?.currentAngle == null ? "–" : `${Math.round(armState.currentAngle)}°`;
+  const { left, right } = overlayState.arms;
+  return {
+    counterText: `L ${describeCount(left)} · R ${describeCount(right)}`,
+    meter: null,
+    detailText: `Elbow L ${describeAngle(left)} · R ${describeAngle(right)}`,
+  };
+}
+
+// ---- Panel: counter, optional meter, detail line ----
+
+function drawPanel(context: CanvasRenderingContext2D, content: PanelContent, layout: OverlayLayout): number {
   const { unit, margin, padding, gap } = layout;
-  const counterText = `Rep ${overlayState.completedRepCount} / ${overlayState.totalRepCount}`;
-  const depthText = `Depth ${overlayState.currentDepth === null ? "–" : formatDepth(overlayState.currentDepth, 2)}`;
-  const tickLabelText = "good";
   const tickLabelGap = 1.5 * unit;
 
   // Measure the text to size the panel around its widest line.
   setFont(context, layout.counterFontSize, 700);
-  const counterWidth = context.measureText(counterText).width;
+  const counterWidth = context.measureText(content.counterText).width;
   setFont(context, layout.labelFontSize, 500);
-  const depthTextWidth = layout.showDepthText ? context.measureText(depthText).width : 0;
-  const meterRowWidth = layout.meterWidth + tickLabelGap + context.measureText(tickLabelText).width;
-  const panelWidth = 2 * padding + Math.max(counterWidth, depthTextWidth, meterRowWidth);
+  const detailTextWidth = layout.showDetailText ? context.measureText(content.detailText).width : 0;
+  const meterRowWidth =
+    content.meter === null ? 0 : layout.meterWidth + tickLabelGap + context.measureText(content.meter.tickLabel).width;
+  const panelWidth = 2 * padding + Math.max(counterWidth, detailTextWidth, meterRowWidth);
 
   // Background.
   context.fillStyle = OVERLAY_COLORS.panelBackground;
@@ -63,20 +106,20 @@ function drawPanel(context: CanvasRenderingContext2D, overlayState: OverlayState
   context.textBaseline = "top";
   context.fillStyle = OVERLAY_COLORS.text;
   setFont(context, layout.counterFontSize, 700);
-  context.fillText(counterText, contentX, cursorY);
+  context.fillText(content.counterText, contentX, cursorY);
   cursorY += layout.counterFontSize + gap;
 
-  // Depth meter: track, accent fill from the bottom, tick at "good depth".
-  const meterTop = cursorY;
-  const meterBottom = meterTop + layout.meterHeight;
-  const meterRadius = layout.meterWidth / 2;
-  context.fillStyle = OVERLAY_COLORS.meterTrack;
-  context.beginPath();
-  context.roundRect(contentX, meterTop, layout.meterWidth, layout.meterHeight, meterRadius);
-  context.fill();
+  // Meter: track, accent fill from the bottom, labelled tick.
+  if (content.meter !== null) {
+    const meterTop = cursorY;
+    const meterBottom = meterTop + layout.meterHeight;
+    const meterRadius = layout.meterWidth / 2;
+    context.fillStyle = OVERLAY_COLORS.meterTrack;
+    context.beginPath();
+    context.roundRect(contentX, meterTop, layout.meterWidth, layout.meterHeight, meterRadius);
+    context.fill();
 
-  if (overlayState.currentDepth !== null) {
-    const fillHeight = meterFillFraction(overlayState.currentDepth) * layout.meterHeight;
+    const fillHeight = content.meter.fillFraction * layout.meterHeight;
     if (fillHeight > 0) {
       context.fillStyle = OVERLAY_COLORS.meterFill;
       context.beginPath();
@@ -89,46 +132,48 @@ function drawPanel(context: CanvasRenderingContext2D, overlayState: OverlayState
       );
       context.fill();
     }
+
+    const tickY = meterBottom - content.meter.tickFraction * layout.meterHeight;
+    context.strokeStyle = OVERLAY_COLORS.tick;
+    context.lineWidth = Math.max(1, 0.5 * unit);
+    context.beginPath();
+    context.moveTo(contentX - 0.8 * unit, tickY);
+    context.lineTo(contentX + layout.meterWidth + 0.8 * unit, tickY);
+    context.stroke();
+
+    setFont(context, layout.labelFontSize, 500);
+    context.fillStyle = OVERLAY_COLORS.mutedText;
+    context.textBaseline = "middle";
+    context.fillText(content.meter.tickLabel, contentX + layout.meterWidth + tickLabelGap, tickY);
+    cursorY = meterBottom + gap;
   }
 
-  const tickY = meterBottom - meterFillFraction(GOOD_DEPTH_THRESHOLD) * layout.meterHeight;
-  context.strokeStyle = OVERLAY_COLORS.tick;
-  context.lineWidth = Math.max(1, 0.5 * unit);
-  context.beginPath();
-  context.moveTo(contentX - 0.8 * unit, tickY);
-  context.lineTo(contentX + layout.meterWidth + 0.8 * unit, tickY);
-  context.stroke();
-
-  setFont(context, layout.labelFontSize, 500);
-  context.fillStyle = OVERLAY_COLORS.mutedText;
-  context.textBaseline = "middle";
-  context.fillText(tickLabelText, contentX + layout.meterWidth + tickLabelGap, tickY);
-  cursorY = meterBottom + gap;
-
-  // Live depth value (dropped on very small players to keep the panel short).
-  if (layout.showDepthText) {
+  // Detail line (dropped on very small players to keep the panel short).
+  if (layout.showDetailText) {
+    setFont(context, layout.labelFontSize, 500);
     context.textBaseline = "top";
     context.fillStyle = OVERLAY_COLORS.text;
-    context.fillText(depthText, contentX, cursorY);
+    context.fillText(content.detailText, contentX, cursorY);
   }
 
   return margin + layout.panelHeight;
 }
 
-// ---- Grade pop-up: two colored badges under the panel ----
+// ---- Grade pop-ups: one row of colored badges under the panel ----
 
 function drawBadge(
   context: CanvasRenderingContext2D,
-  feedback: Feedback,
+  badge: PopupBadge,
   badgeX: number,
   badgeY: number,
   layout: OverlayLayout,
 ): number {
-  const badgeText = getShortFeedbackText(feedback);
+  const shortText = getShortFeedbackText(badge.feedback);
+  const badgeText = badge.armLabel === null ? shortText : `${badge.armLabel} ${shortText}`;
   setFont(context, layout.badgeFontSize, 600);
   const badgeWidth = context.measureText(badgeText).width + 2 * layout.badgePaddingX;
 
-  context.fillStyle = FEEDBACK_TONE_COLORS[getFeedbackTone(feedback.code)];
+  context.fillStyle = FEEDBACK_TONE_COLORS[getFeedbackTone(badge.feedback.code)];
   context.beginPath();
   context.roundRect(badgeX, badgeY, badgeWidth, layout.badgeHeight, layout.badgeHeight / 2);
   context.fill();
@@ -139,22 +184,26 @@ function drawBadge(
   return badgeWidth;
 }
 
-function drawGradePopup(
+function drawGradePopups(
   context: CanvasRenderingContext2D,
-  overlayState: OverlayState,
+  gradePopups: GradePopup[],
   layout: OverlayLayout,
   panelBottom: number,
 ): void {
-  const gradePopup = overlayState.gradePopup;
-  if (gradePopup === null || gradePopup.opacity <= 0) return;
-
-  context.globalAlpha = gradePopup.opacity;
   const badgeY = panelBottom + layout.gap;
-  const depthBadgeWidth = drawBadge(context, gradePopup.depthFeedback, layout.margin, badgeY, layout);
-  drawBadge(context, gradePopup.tempoFeedback, layout.margin + depthBadgeWidth + layout.gap, badgeY, layout);
+  let badgeX = layout.margin;
+  for (const gradePopup of gradePopups) {
+    if (gradePopup.opacity <= 0) continue;
+    // Each pop-up fades on its own (e.g. the left arm's curl fades while the right arm's appears).
+    context.globalAlpha = gradePopup.opacity;
+    for (const badge of gradePopup.badges) {
+      badgeX += drawBadge(context, badge, badgeX, badgeY, layout) + layout.gap;
+    }
+  }
+  context.globalAlpha = 1;
 }
 
-// Draws the overlay (panel + pop-up) on top of whatever is already on the canvas.
+// Draws the overlay (panel + pop-ups) on top of whatever is already on the canvas.
 // devicePixelRatio = canvas pixels per displayed CSS pixel: the layout is sized for the size the
 // video is shown at (readable on a phone), then drawn at full canvas resolution (sharp).
 // For a video export, pass the video size as the canvas size and 1.
@@ -165,15 +214,35 @@ export function drawOverlay(
   canvasHeight: number,
   devicePixelRatio: number = 1,
 ): void {
+  const isSquat = overlayState.exercise === "squat";
+  const panelContent = isSquat ? squatPanelContent(overlayState) : curlPanelContent(overlayState);
   const layout = computeOverlayLayout(
     canvasWidth / devicePixelRatio,
     canvasHeight / devicePixelRatio,
     devicePixelRatio,
+    isSquat ? SQUAT_PANEL_SHAPE : CURL_PANEL_SHAPE,
   );
   context.save();
-  const panelBottom = drawPanel(context, overlayState, layout);
-  drawGradePopup(context, overlayState, layout, panelBottom);
+  const panelBottom = drawPanel(context, panelContent, layout);
+  drawGradePopups(context, overlayState.gradePopups, layout, panelBottom);
   context.restore();
+}
+
+// ---- Skeleton tint ----
+
+// Line color per connection: the tint covering it (its feedback tone color), else the default.
+function skeletonLineColor(skeletonTints: SkeletonTint[]): (startIndex: number, endIndex: number) => string {
+  return (startIndex, endIndex) => {
+    const matchingTint = skeletonTints.find(
+      (skeletonTint) =>
+        skeletonTint.connections === "all" ||
+        skeletonTint.connections.some(
+          ([tintStart, tintEnd]) =>
+            (tintStart === startIndex && tintEnd === endIndex) || (tintStart === endIndex && tintEnd === startIndex),
+        ),
+    );
+    return matchingTint ? FEEDBACK_TONE_COLORS[getFeedbackTone(matchingTint.feedbackCode)] : SKELETON_LINE_COLOR;
+  };
 }
 
 // ---- Full replay frame ----
@@ -192,7 +261,8 @@ type RenderReplayFrameOptions = {
 };
 
 // Clears the canvas and draws everything for this video time: the skeleton (tinted by the
-// active rep's depth grade when the overlay is on) and the coaching overlay.
+// active rep's grade when the overlay is on: whole body for squats, the curling arm for curls)
+// and the coaching overlay.
 export function renderReplayFrame(
   context: CanvasRenderingContext2D,
   {
@@ -210,10 +280,8 @@ export function renderReplayFrame(
 
   const nearestFrame = findNearestFrame(recording.frames, timeSeconds * 1000);
   if (nearestFrame?.landmarks) {
-    const skeletonColor = overlayState?.skeletonFeedbackCode
-      ? FEEDBACK_TONE_COLORS[getFeedbackTone(overlayState.skeletonFeedbackCode)]
-      : SKELETON_LINE_COLOR;
-    drawSkeleton(context, nearestFrame.landmarks, canvasWidth, canvasHeight, skeletonColor);
+    const lineColor = skeletonLineColor(overlayState?.skeletonTints ?? []);
+    drawSkeleton(context, nearestFrame.landmarks, canvasWidth, canvasHeight, lineColor);
   }
 
   if (overlayState !== null) {

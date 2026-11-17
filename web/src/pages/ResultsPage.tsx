@@ -1,15 +1,13 @@
 import { useRef, useState } from "react";
 import { Navigate, useNavigate } from "react-router";
-import { DepthChart } from "@/components/DepthChart";
+import { CurlResults } from "@/components/CurlResults";
 import { DownloadLandmarksButton } from "@/components/DownloadLandmarksButton";
 import { PoseReplayPlayer, type PoseReplayPlayerHandle } from "@/components/PoseReplayPlayer";
 import { RecordingSummary } from "@/components/RecordingSummary";
-import { RepCountSummary } from "@/components/RepCountSummary";
-import { RepList } from "@/components/RepList";
+import { SquatResults } from "@/components/SquatResults";
 import { useWorkoutSession } from "@/hooks/useWorkoutSession";
-import type { RepResult } from "@/types/analysis";
 
-// Results for the current set: replay, rep count, per-rep grades and the depth chart.
+// Results for the current set: replay, then the exercise's counts, per-rep grades and chart.
 export function ResultsPage() {
   const navigate = useNavigate();
   const playerRef = useRef<PoseReplayPlayerHandle>(null);
@@ -22,8 +20,8 @@ export function ResultsPage() {
     return <Navigate to="/" replace />;
   }
 
-  function handleSelectRep(rep: RepResult): void {
-    playerRef.current?.seekTo(rep.startSeconds);
+  function handleSeek(timeSeconds: number): void {
+    playerRef.current?.seekTo(timeSeconds);
   }
 
   function handleAnalyzeAnother(): void {
@@ -55,26 +53,17 @@ export function ResultsPage() {
         )}
       </div>
 
-      {analysis.status === "low_visibility" ? (
-        // Couldn't see enough of the body: the server's advice replaces the reps.
+      {analysis.status !== "ok" ? (
+        // Not counted (body not visible enough, a curl not filmed from the front, or part of the video
+        // never analyzed): the server's advice replaces the reps.
         <div role="alert" className="space-y-1 rounded-xl border border-amber-500/40 bg-amber-500/10 p-4">
           <p className="text-lg font-semibold text-amber-100">Couldn't count this set</p>
           <p className="text-amber-100/90">{analysis.message}</p>
         </div>
+      ) : analysis.exercise === "squat" ? (
+        <SquatResults analysis={analysis} onSeek={handleSeek} />
       ) : (
-        <>
-          <RepCountSummary analysis={analysis} />
-
-          {analysis.reps.length > 0 && (
-            <div className="space-y-2">
-              <h2 className="font-semibold">Reps</h2>
-              <p className="text-sm text-neutral-400">Tap a rep to watch it.</p>
-              <RepList reps={analysis.reps} onSelectRep={handleSelectRep} />
-            </div>
-          )}
-
-          {analysis.depthSignal !== null && <DepthChart depthSignal={analysis.depthSignal} reps={analysis.reps} />}
-        </>
+        <CurlResults analysis={analysis} onSeek={handleSeek} />
       )}
 
       {/* Actions */}

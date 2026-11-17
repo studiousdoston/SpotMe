@@ -29,6 +29,8 @@ export type PoseExtractionStats = {
   framesWithPerson: number;
   // Frames the browser showed while the model was still busy with the previous one.
   framesSkipped: number;
+  // Times analysis paused because the page went into the background (and resumed without losing frames).
+  backgroundPauseCount: number;
   // Longest stretch of video time between two analyzed frames.
   largestGapMs: number;
   processingTimeMs: number;

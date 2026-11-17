@@ -3,12 +3,13 @@
 import type { PoseFrame } from "@/types/pose";
 
 // Every exercise the app knows about, and the ones the server can analyze today.
-export type ExerciseId = "squat" | "bicep_curl" | "push_up";
-export type AnalyzableExercise = "squat";
+export type ExerciseId = "squat" | "curl" | "push_up";
+export type AnalyzableExercise = "squat" | "curl";
 
-// Feedback codes the server sends (server/analysis/squat.py).
+// Feedback codes the server sends (server/analysis/squat.py and curl.py).
 export type DepthFeedbackCode = "good_depth" | "almost_depth" | "too_shallow";
 export type TempoFeedbackCode = "controlled" | "dropping_too_fast" | "too_fast";
+export type RangeFeedbackCode = "full_curl" | "partial_curl";
 
 // A stable code (for styling) plus human-readable text.
 export type Feedback<Code extends string = string> = {
@@ -27,9 +28,17 @@ export type AnalyzeRequest = {
   durationSeconds: number | null;
 };
 
-// ---- Response ----
+// ---- Response: shared ----
 
-export type RepResult = {
+// A smoothed signal over time (squat depth, elbow angle); null = no value at that time.
+export type TimeSeries = {
+  timesSeconds: number[];
+  values: (number | null)[];
+};
+
+// ---- Response: squat ----
+
+export type SquatRepResult = {
   repNumber: number;
   startSeconds: number;
   bottomSeconds: number;
@@ -41,22 +50,58 @@ export type RepResult = {
   tempoFeedback: Feedback<TempoFeedbackCode>;
 };
 
-export type DepthSignal = {
-  timesSeconds: number[];
-  values: (number | null)[];
-};
-
-export type AnalysisResult = {
-  exercise: AnalyzableExercise;
-  status: "ok" | "low_visibility";
+export type SquatAnalysisResult = {
+  exercise: "squat";
+  // incomplete_recording: part of the video has no frames, so the set wasn't counted.
+  status: "ok" | "low_visibility" | "incomplete_recording";
   message: string;
   repCount: number;
   trustedFraction: number;
   fps: number;
-  reps: RepResult[];
-  // null when visibility was too low to compute a trustworthy curve.
-  depthSignal: DepthSignal | null;
+  reps: SquatRepResult[];
+  // null when the set wasn't counted (low visibility or an incomplete recording).
+  depthSignal: TimeSeries | null;
 };
+
+// ---- Response: curl (each arm counted separately) ----
+
+export type ArmSide = "left" | "right";
+
+export type CurlRepResult = {
+  repNumber: number;
+  startSeconds: number;
+  // Moment of the smallest elbow angle (top of the curl).
+  peakSeconds: number;
+  endSeconds: number;
+  // Smallest elbow angle in degrees (<= 70 = full curl).
+  topAngle: number;
+  rangeFeedback: Feedback<RangeFeedbackCode>;
+};
+
+export type CurlArmResult = {
+  // False when the elbow/wrist were too hidden to count this arm.
+  visible: boolean;
+  // null = not counted (hidden arm, or the set wasn't counted). 0 = counted, no curls found.
+  repCount: number | null;
+  reps: CurlRepResult[];
+  // Smoothed elbow angle in degrees (null when this arm wasn't counted).
+  elbowAngleSignal: TimeSeries | null;
+};
+
+export type CurlAnalysisResult = {
+  exercise: "curl";
+  status: "ok" | "low_visibility" | "not_front_view" | "incomplete_recording";
+  message: string;
+  // Non-blocking advice; the counts are still shown.
+  warnings: string[];
+  // 0° = facing the camera, 90° = side on. null when the shoulders were never visible.
+  bodyTurnAngle: number | null;
+  fps: number;
+  arms: Record<ArmSide, CurlArmResult>;
+};
+
+// One result type per exercise; narrow with `analysis.exercise`.
+export type AnalysisResult = SquatAnalysisResult | CurlAnalysisResult;
 
 // FastAPI's 422 body: { detail: [{ loc: [...], msg: "..." }, ...] }
 export type ValidationErrorItem = {

@@ -14,6 +14,10 @@ export type PoseExtractionProgress = {
   progressPercent: number;
   // Current playback speed, or null while the first frame is still being prepared.
   playbackRate: number | null;
+  // True while paused because SpotMe is in the background.
+  isPausedInBackground: boolean;
+  // True once this run has been paused at least once (keeps the "keep SpotMe open" reminder up).
+  wasPausedInBackground: boolean;
 };
 
 // Turns any extraction failure into a message for the user.
@@ -34,6 +38,8 @@ export function usePoseExtraction({
 }: UsePoseExtractionOptions): PoseExtractionProgress {
   const [progressPercent, setProgressPercent] = useState(0);
   const [playbackRate, setPlaybackRate] = useState<number | null>(null);
+  const [isPausedInBackground, setIsPausedInBackground] = useState(false);
+  const [wasPausedInBackground, setWasPausedInBackground] = useState(false);
 
   // Effect events always see the latest callbacks without restarting the run.
   const handleComplete = useEffectEvent(onComplete);
@@ -52,6 +58,8 @@ export function usePoseExtraction({
       onProgress: (extractionProgress) => {
         setProgressPercent(Math.floor(extractionProgress.progressFraction * 100));
         setPlaybackRate(extractionProgress.playbackRate);
+        setIsPausedInBackground(extractionProgress.isPausedInBackground);
+        if (extractionProgress.isPausedInBackground) setWasPausedInBackground(true);
       },
     })
       .then((extractionResult) => handleComplete(extractionResult))
@@ -65,5 +73,5 @@ export function usePoseExtraction({
     return () => abortController.abort();
   }, [videoRef, poseLandmarker]);
 
-  return { progressPercent, playbackRate };
+  return { progressPercent, playbackRate, isPausedInBackground, wasPausedInBackground };
 }

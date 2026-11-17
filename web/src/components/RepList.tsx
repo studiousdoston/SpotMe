@@ -1,10 +1,10 @@
 import { FeedbackBadge } from "@/components/FeedbackBadge";
-import type { RepResult } from "@/types/analysis";
+import type { SquatRepResult } from "@/types/analysis";
 
 type RepListProps = {
-  reps: RepResult[];
+  reps: SquatRepResult[];
   // Tapping a rep jumps the video to it.
-  onSelectRep: (rep: RepResult) => void;
+  onSelectRep: (rep: SquatRepResult) => void;
 };
 
 function formatSeconds(seconds: number): string {

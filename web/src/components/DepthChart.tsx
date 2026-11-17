@@ -11,7 +11,7 @@ import {
   YAxis,
 } from "recharts";
 import { formatDepth } from "@/lib/formatDepth";
-import type { DepthSignal, RepResult } from "@/types/analysis";
+import type { SquatRepResult, TimeSeries } from "@/types/analysis";
 
 // Same threshold as the server's depth_grade (server/analysis/squat.py).
 const GOOD_DEPTH_THRESHOLD = 0.9;
@@ -31,8 +31,8 @@ const CHART_COLORS = {
 } as const;
 
 type DepthChartProps = {
-  depthSignal: DepthSignal;
-  reps: RepResult[];
+  depthSignal: TimeSeries;
+  reps: SquatRepResult[];
 };
 
 type DepthChartPoint = {

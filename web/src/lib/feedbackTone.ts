@@ -7,9 +7,11 @@ export type FeedbackTone = "good" | "warning" | "bad" | "neutral";
 const TONE_BY_FEEDBACK_CODE: Record<string, FeedbackTone> = {
   good_depth: "good",
   controlled: "good",
+  full_curl: "good",
   almost_depth: "warning",
   dropping_too_fast: "warning",
   too_fast: "warning",
+  partial_curl: "warning",
   too_shallow: "bad",
 };
 
@@ -33,6 +35,8 @@ const SHORT_TEXT_BY_FEEDBACK_CODE: Record<string, string> = {
   controlled: "Controlled",
   dropping_too_fast: "Dropped too fast",
   too_fast: "Too fast",
+  full_curl: "Full",
+  partial_curl: "Partial",
 };
 
 export function getShortFeedbackText(feedback: { code: string; text: string }): string {

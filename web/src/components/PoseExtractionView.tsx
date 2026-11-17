@@ -15,10 +15,16 @@ type PoseExtractionViewProps = {
 // Mounting this component starts the analysis; unmounting it stops it.
 export function PoseExtractionView({ videoUrl, poseLandmarker, onComplete, onError, onCancel }: PoseExtractionViewProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const { progressPercent, playbackRate } = usePoseExtraction({ videoRef, poseLandmarker, onComplete, onError });
+  const { progressPercent, playbackRate, isPausedInBackground, wasPausedInBackground } = usePoseExtraction({
+    videoRef,
+    poseLandmarker,
+    onComplete,
+    onError,
+  });
 
   // Before playback starts, the first frame is being analyzed while paused.
-  const statusText = playbackRate === null ? "Preparing video…" : `Analyzing at ${playbackRate}× speed`;
+  let statusText = playbackRate === null ? "Preparing video…" : `Analyzing at ${playbackRate}× speed`;
+  if (isPausedInBackground) statusText = "Paused";
 
   return (
     <div className="space-y-4">
@@ -31,6 +37,14 @@ export function PoseExtractionView({ videoUrl, poseLandmarker, onComplete, onErr
         preload="auto"
         className="block max-h-64 w-full rounded-xl bg-black object-contain"
       />
+
+      {/* Shown from the first background pause on: the user only sees it after coming back,
+          so it stays up as a reminder for the rest of the run. */}
+      {wasPausedInBackground && (
+        <p role="status" className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+          Keep SpotMe open while analyzing. Analysis pauses while the app is in the background.
+        </p>
+      )}
 
       {/* Progress through the video's duration, plus the current analysis speed */}
       <div className="space-y-2">

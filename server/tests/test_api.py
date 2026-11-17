@@ -5,7 +5,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 
 from main import app
-from schemas import AnalyzeResponse
+from schemas import CurlAnalyzeResponse, SquatAnalyzeResponse
 
 client = TestClient(app)
 
@@ -18,7 +18,7 @@ def test_analyze_fixture_returns_valid_response(squat_front_recording: dict[str,
 
     # camelCase keys, and the body parses back into the response model.
     assert {"repCount", "trustedFraction", "depthSignal", "reps"} <= response_json.keys()
-    parsed_response = AnalyzeResponse.model_validate(response_json)
+    parsed_response = SquatAnalyzeResponse.model_validate(response_json)
     assert parsed_response.status == "ok"
     assert parsed_response.rep_count == len(parsed_response.reps) > 0
     assert parsed_response.depth_signal is not None
@@ -26,6 +26,25 @@ def test_analyze_fixture_returns_valid_response(squat_front_recording: dict[str,
     first_rep = response_json["reps"][0]
     assert {"repNumber", "bottomDepth", "depthFeedback", "tempoFeedback"} <= first_rep.keys()
     assert {"code", "text"} == first_rep["depthFeedback"].keys()
+
+
+def test_analyze_curl_returns_per_arm_response(curl_front_recording: dict[str, Any]) -> None:
+    response = client.post("/api/analyze", json={**curl_front_recording, "exercise": "curl"})
+
+    assert response.status_code == 200
+    response_json = response.json()
+
+    # camelCase keys, and the body parses back into the curl response model.
+    assert response_json["exercise"] == "curl"
+    assert {"status", "message", "warnings", "bodyTurnAngle", "arms"} <= response_json.keys()
+    assert {"visible", "repCount", "reps", "elbowAngleSignal"} <= response_json["arms"]["left"].keys()
+    parsed_response = CurlAnalyzeResponse.model_validate(response_json)
+    assert parsed_response.status == "ok"
+    first_rep = response_json["arms"]["left"]["reps"][0]
+    assert {"repNumber", "startSeconds", "peakSeconds", "endSeconds", "topAngle", "rangeFeedback"} <= (
+        first_rep.keys()
+    )
+    assert {"code", "text"} == first_rep["rangeFeedback"].keys()
 
 
 def test_analyze_rejects_unsupported_exercise(squat_front_recording: dict[str, Any]) -> None:

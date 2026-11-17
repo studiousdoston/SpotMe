@@ -15,6 +15,7 @@ export function RecordingSummary({ stats }: { stats: PoseExtractionStats }) {
       value: `${(stats.processingTimeMs / 1000).toFixed(1)} s`,
     },
     { label: "Frames skipped", value: stats.framesSkipped.toString() },
+    { label: "Background pauses", value: stats.backgroundPauseCount.toString() },
     {
       label: "Largest gap (ms)",
       value: Math.round(stats.largestGapMs).toString(),

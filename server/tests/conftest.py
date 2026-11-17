@@ -9,6 +9,7 @@ import pytest
 
 FIXTURES_DIRECTORY = Path(__file__).parent / "fixtures"
 SQUAT_FRONT_FIXTURE = FIXTURES_DIRECTORY / "squat-front.landmarks.json"
+CURL_FRONT_FIXTURE = FIXTURES_DIRECTORY / "curls_front.landmarks.json"
 
 FPS = 30.0
 VIDEO_WIDTH = 480
@@ -25,6 +26,13 @@ TORSO_HEIGHT = HIP_Y_STANDING - SHOULDER_Y
 def squat_front_recording() -> dict[str, Any]:
     """Real recording from the web app (PoseRecording JSON, without the exercise field)."""
     with SQUAT_FRONT_FIXTURE.open() as fixture_file:
+        return json.load(fixture_file)
+
+
+@pytest.fixture
+def curl_front_recording() -> dict[str, Any]:
+    """Real alternating-curl recording from the web app (PoseRecording JSON, without the exercise field)."""
+    with CURL_FRONT_FIXTURE.open() as fixture_file:
         return json.load(fixture_file)
 
 
@@ -79,3 +87,116 @@ def build_squat_recording(
         "videoHeight": VIDEO_HEIGHT,
         "durationSeconds": frame_index / FPS,
     }
+
+
+# ---- Synthetic curls ----
+
+# Arm lengths in pixels (upper arm and forearm), and where the shoulders sit (normalized).
+UPPER_ARM_PIXELS = 120.0
+FOREARM_PIXELS = 110.0
+CURL_SHOULDER_Y = 0.30
+STRAIGHT_ARM_ANGLE = 170.0
+FULL_CURL_TOP_ANGLE = 40.0
+
+
+def build_curl_landmarks(
+    left_elbow_angle: float,
+    right_elbow_angle: float,
+    arm_visibility: tuple[float, float] = (0.99, 0.99),
+    shoulder_x_gap: float = 0.2,
+    shoulder_z_gap: float = 0.0,
+) -> list[dict[str, float]]:
+    """33 landmarks for a standing person with both elbow angles set (degrees, 180 = straight).
+
+    The upper arm hangs straight down; the forearm swings up and outwards in the image plane.
+    shoulder_x_gap / shoulder_z_gap set the body turn angle: atan(z_gap / x_gap).
+    arm_visibility = (left, right) visibility of each arm's elbow and wrist.
+    """
+    landmarks = [{"x": 0.5, "y": 0.6, "z": 0.0, "visibility": 0.99} for _ in range(33)]
+    arm_specs = (
+        # (shoulder, elbow, wrist, shoulder x, outward direction, elbow angle, visibility)
+        (11, 13, 15, 0.5 + shoulder_x_gap / 2, 1.0, left_elbow_angle, arm_visibility[0]),
+        (12, 14, 16, 0.5 - shoulder_x_gap / 2, -1.0, right_elbow_angle, arm_visibility[1]),
+    )
+    for shoulder_index, elbow_index, wrist_index, shoulder_x, outward, elbow_angle, visibility in arm_specs:
+        shoulder_z = shoulder_z_gap / 2 if shoulder_index == 11 else -shoulder_z_gap / 2
+        # Pixel positions: elbow straight below the shoulder, wrist at elbow_angle from the upper arm.
+        shoulder_pixel_x, shoulder_pixel_y = shoulder_x * VIDEO_WIDTH, CURL_SHOULDER_Y * VIDEO_HEIGHT
+        elbow_pixel_x, elbow_pixel_y = shoulder_pixel_x, shoulder_pixel_y + UPPER_ARM_PIXELS
+        angle_radians = math.radians(elbow_angle)
+        wrist_pixel_x = elbow_pixel_x + outward * FOREARM_PIXELS * math.sin(angle_radians)
+        wrist_pixel_y = elbow_pixel_y - FOREARM_PIXELS * math.cos(angle_radians)
+        for landmark_index, pixel_x, pixel_y, landmark_visibility in (
+            (shoulder_index, shoulder_pixel_x, shoulder_pixel_y, 0.99),
+            (elbow_index, elbow_pixel_x, elbow_pixel_y, visibility),
+            (wrist_index, wrist_pixel_x, wrist_pixel_y, visibility),
+        ):
+            landmarks[landmark_index] = {
+                "x": pixel_x / VIDEO_WIDTH,
+                "y": pixel_y / VIDEO_HEIGHT,
+                "z": shoulder_z if landmark_index == shoulder_index else 0.0,
+                "visibility": landmark_visibility,
+            }
+    return landmarks
+
+
+def build_curl_recording(
+    curls_per_arm: int,
+    top_angle: float = FULL_CURL_TOP_ANGLE,
+    arm_visibility: tuple[float, float] = (0.99, 0.99),
+    shoulder_x_gap: float = 0.2,
+    shoulder_z_gap: float = 0.0,
+    curl_seconds: float = 2.0,
+    rest_seconds: float = 0.5,
+) -> dict[str, Any]:
+    """Alternating curls: left, right, left, ... each arm `curls_per_arm` times (cosine up and down)."""
+    frames: list[dict[str, Any]] = []
+    frame_index = 0
+
+    def add_frame(left_angle: float, right_angle: float) -> None:
+        nonlocal frame_index
+        landmarks = build_curl_landmarks(
+            left_angle, right_angle, arm_visibility, shoulder_x_gap, shoulder_z_gap
+        )
+        frames.append({"timestampMs": frame_index * 1000 / FPS, "landmarks": landmarks})
+        frame_index += 1
+
+    def rest() -> None:
+        for _ in range(round(rest_seconds * FPS)):
+            add_frame(STRAIGHT_ARM_ANGLE, STRAIGHT_ARM_ANGLE)
+
+    curl_frames = round(curl_seconds * FPS)
+    rest()
+    for _ in range(curls_per_arm):
+        for arm_side in ("left", "right"):
+            for curl_frame in range(curl_frames):
+                # 0 → 1 → 0 over the curl: elbow closes from straight to top_angle and opens again.
+                bend_fraction = (1 - math.cos(2 * math.pi * curl_frame / curl_frames)) / 2
+                curling_angle = STRAIGHT_ARM_ANGLE - bend_fraction * (STRAIGHT_ARM_ANGLE - top_angle)
+                if arm_side == "left":
+                    add_frame(curling_angle, STRAIGHT_ARM_ANGLE)
+                else:
+                    add_frame(STRAIGHT_ARM_ANGLE, curling_angle)
+            rest()
+
+    return {
+        "frames": frames,
+        "videoWidth": VIDEO_WIDTH,
+        "videoHeight": VIDEO_HEIGHT,
+        "durationSeconds": frame_index / FPS,
+    }
+
+
+# ---- Gaps ----
+
+
+def remove_frames_between(
+    recording: dict[str, Any], start_seconds: float, end_seconds: float
+) -> dict[str, Any]:
+    """Copy of the recording without the frames strictly between two times (like a backgrounded app)."""
+    kept_frames = [
+        frame
+        for frame in recording["frames"]
+        if not start_seconds * 1000 < frame["timestampMs"] < end_seconds * 1000
+    ]
+    return {**recording, "frames": kept_frames}

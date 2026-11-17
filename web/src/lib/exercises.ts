@@ -19,7 +19,13 @@ export const EXERCISE_OPTIONS: ExerciseOption[] = [
     isAvailable: true,
     cameraHint: "Any angle, keep hips and knees in frame.",
   },
-  { id: "bicep_curl", label: "Bicep curl", pluralLabel: "curls", isAvailable: false, cameraHint: null },
+  {
+    id: "curl",
+    label: "Bicep curl",
+    pluralLabel: "curls",
+    isAvailable: true,
+    cameraHint: "Face the camera, both arms in view.",
+  },
   { id: "push_up", label: "Push-up", pluralLabel: "push-ups", isAvailable: false, cameraHint: null },
 ];
 
@@ -31,7 +37,7 @@ export function getExerciseOption(exerciseId: ExerciseId): ExerciseOption {
 
 // Narrows an exercise to one the server can analyze today.
 export function isAnalyzableExercise(exerciseId: ExerciseId): exerciseId is AnalyzableExercise {
-  return exerciseId === "squat";
+  return exerciseId === "squat" || exerciseId === "curl";
 }
 
 // "1 squat" / "6 squats"

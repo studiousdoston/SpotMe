@@ -3,7 +3,7 @@
 JSON uses camelCase (to match the web app); Python uses snake_case.
 """
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -42,7 +42,7 @@ class PoseFrame(CamelModel):
 class AnalyzeRequest(CamelModel):
     """The PoseRecording the web app produces, plus which exercise it is."""
 
-    exercise: Literal["squat"]
+    exercise: Literal["squat", "curl"]
     # At least two frames, so a frame interval (and therefore fps) can be measured.
     frames: list[PoseFrame] = Field(min_length=2)
     video_width: int = Field(gt=0)
@@ -51,7 +51,7 @@ class AnalyzeRequest(CamelModel):
     duration_seconds: float | None = None
 
 
-# ---- Response ----
+# ---- Response: shared pieces ----
 
 
 class Feedback(CamelModel):
@@ -61,8 +61,18 @@ class Feedback(CamelModel):
     text: str
 
 
-class RepResult(CamelModel):
-    """One counted rep with its depth and tempo grades."""
+class TimeSeries(CamelModel):
+    """A smoothed signal over time (for charts and the overlay); null = no value at that time."""
+
+    times_seconds: list[float]
+    values: list[float | None]
+
+
+# ---- Response: squat ----
+
+
+class SquatRepResult(CamelModel):
+    """One counted squat with its depth and tempo grades."""
 
     rep_number: int
     start_seconds: float
@@ -75,22 +85,70 @@ class RepResult(CamelModel):
     tempo_feedback: Feedback
 
 
-class DepthSignal(CamelModel):
-    """The smoothed depth curve over time (for charts and the overlay)."""
-
-    times_seconds: list[float]
-    values: list[float | None]
-
-
-class AnalyzeResponse(CamelModel):
-    """Result of analyzing one set."""
+class SquatAnalyzeResponse(CamelModel):
+    """Result of analyzing one squat set."""
 
     exercise: Literal["squat"]
-    status: Literal["ok", "low_visibility"]
+    # incomplete_recording: part of the video has no frames (see analysis/timeline.py).
+    status: Literal["ok", "low_visibility", "incomplete_recording"]
     message: str
     rep_count: int
     trusted_fraction: float
     fps: float
-    reps: list[RepResult]
-    # None when visibility was too low to compute a trustworthy curve.
-    depth_signal: DepthSignal | None
+    reps: list[SquatRepResult]
+    # None when the set wasn't counted (low visibility or an incomplete recording).
+    depth_signal: TimeSeries | None
+
+
+# ---- Response: curl ----
+
+
+class CurlRepResult(CamelModel):
+    """One counted curl of one arm, graded by how far the elbow bent."""
+
+    rep_number: int
+    start_seconds: float
+    # Moment of the smallest elbow angle (the top of the curl).
+    peak_seconds: float
+    end_seconds: float
+    # Smallest elbow angle in the rep, in degrees (smaller = fuller curl).
+    top_angle: float
+    range_feedback: Feedback
+
+
+class CurlArmResult(CamelModel):
+    """Counting result for one arm."""
+
+    # False when the elbow/wrist were too hidden to count this arm.
+    visible: bool
+    # None = not counted (arm hidden, or the set wasn't counted at all). 0 = counted, no curls found.
+    rep_count: int | None
+    reps: list[CurlRepResult]
+    # Smoothed elbow angle in degrees (None when this arm wasn't counted).
+    elbow_angle_signal: TimeSeries | None
+
+
+class CurlArms(CamelModel):
+    """The person's own left and right arm (MediaPipe's left = landmarks 11/13/15)."""
+
+    left: CurlArmResult
+    right: CurlArmResult
+
+
+class CurlAnalyzeResponse(CamelModel):
+    """Result of analyzing one alternating dumbbell curl set (each arm counted separately)."""
+
+    exercise: Literal["curl"]
+    status: Literal["ok", "low_visibility", "not_front_view", "incomplete_recording"]
+    message: str
+    # Non-blocking advice (e.g. "turn to face the camera"); the counts are still shown.
+    warnings: list[str]
+    # How far the shoulders are turned away from the camera: 0° = facing it, 90° = side on.
+    # None when the shoulders were never visible enough to measure.
+    body_turn_angle: float | None
+    fps: float
+    arms: CurlArms
+
+
+# One response type per exercise; "exercise" tells them apart.
+AnalyzeResponse = Annotated[SquatAnalyzeResponse | CurlAnalyzeResponse, Field(discriminator="exercise")]

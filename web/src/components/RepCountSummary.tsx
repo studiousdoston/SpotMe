@@ -1,8 +1,8 @@
 import { formatRepCount } from "@/lib/exercises";
-import type { AnalysisResult } from "@/types/analysis";
+import type { SquatAnalysisResult } from "@/types/analysis";
 
 // Big rep count plus "4/6 good depth" style chips.
-export function RepCountSummary({ analysis }: { analysis: AnalysisResult }) {
+export function RepCountSummary({ analysis }: { analysis: SquatAnalysisResult }) {
   const repCount = analysis.reps.length;
   const goodDepthCount = analysis.reps.filter((rep) => rep.depthFeedback.code === "good_depth").length;
   const controlledCount = analysis.reps.filter((rep) => rep.tempoFeedback.code === "controlled").length;

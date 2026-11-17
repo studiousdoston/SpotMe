@@ -1,13 +1,13 @@
 """Squat counting and grading, ported from notebooks/01 with the same formulas and thresholds."""
 
-import math
+from typing import Literal
 
 import numpy as np
 import pandas as pd
 
 from analysis.reps import count_reps_peaks, find_rep_bottom_index, measure_rep_tempo
-from analysis.timeline import LandmarkTimeline
-from schemas import AnalyzeResponse, DepthSignal, Feedback, RepResult
+from analysis.timeline import LandmarkTimeline, build_time_series, describe_incomplete_recording
+from schemas import Feedback, SquatAnalyzeResponse, SquatRepResult
 
 # ---- Notebook constants ----
 # Shoulders, hips, knees: all must be seen for a frame to count as trusted.
@@ -54,6 +54,12 @@ def tempo_grade(down_seconds: float, total_seconds: float) -> Feedback:
 # ---- Depth signal ----
 
 
+def trusted_frame_mask(landmarks: pd.DataFrame) -> pd.Series:
+    """Trusted = every key landmark is reasonably visible (NaN rows are never trusted)."""
+    visibility_columns = [f"{landmark_index}_vis" for landmark_index in TRUSTED_LANDMARKS]
+    return landmarks[visibility_columns].min(axis=1) > MIN_LANDMARK_VISIBILITY
+
+
 def squat_depth(
     landmarks: pd.DataFrame, video_width: int, video_height: int, fps: float
 ) -> tuple[np.ndarray | None, float]:
@@ -78,9 +84,7 @@ def squat_depth(
         {"hip_y": hip_y, "knee_y": knee_y, "torso": np.hypot(shoulder_x - hip_x, shoulder_y - hip_y)}
     )
 
-    # Trusted = every key landmark is reasonably visible (NaN rows are never trusted).
-    visibility_columns = [f"{landmark_index}_vis" for landmark_index in TRUSTED_LANDMARKS]
-    is_trusted = landmarks[visibility_columns].min(axis=1) > MIN_LANDMARK_VISIBILITY
+    is_trusted = trusted_frame_mask(landmarks)
     trusted_fraction = float(is_trusted.mean())
     if is_trusted.sum() < MIN_TRUSTED_FRAMES:
         return None, trusted_fraction
@@ -103,22 +107,17 @@ def squat_depth(
 # ---- Full analysis ----
 
 
-def json_safe(value: float) -> float | None:
-    """NaN/inf can't go into JSON; send null instead."""
-    return value if math.isfinite(value) else None
-
-
-def analyze_squat(timeline: LandmarkTimeline, video_width: int, video_height: int) -> AnalyzeResponse:
+def analyze_squat(timeline: LandmarkTimeline, video_width: int, video_height: int) -> SquatAnalyzeResponse:
     """Count squats and grade each rep's depth and tempo (notebook's count_squats + reports)."""
     fps = timeline.fps
-    depth, trusted_fraction = squat_depth(timeline.landmarks, video_width, video_height, fps)
 
-    # Not enough of the body visible: no count, ask the user to step back.
-    if depth is None or trusted_fraction < MIN_TRUSTED:
-        return AnalyzeResponse(
+    def not_counted(
+        status: Literal["low_visibility", "incomplete_recording"], message: str, trusted_fraction: float
+    ) -> SquatAnalyzeResponse:
+        return SquatAnalyzeResponse(
             exercise="squat",
-            status="low_visibility",
-            message=LOW_VISIBILITY_MESSAGE,
+            status=status,
+            message=message,
             rep_count=0,
             trusted_fraction=trusted_fraction,
             fps=fps,
@@ -126,14 +125,27 @@ def analyze_squat(timeline: LandmarkTimeline, video_width: int, video_height: in
             depth_signal=None,
         )
 
+    # Part of the video has no frames: don't bridge the gap, ask for a re-run.
+    if timeline.long_gaps:
+        trusted_fraction = float(trusted_frame_mask(timeline.landmarks).mean())
+        return not_counted(
+            "incomplete_recording", describe_incomplete_recording(timeline.long_gaps), trusted_fraction
+        )
+
+    depth, trusted_fraction = squat_depth(timeline.landmarks, video_width, video_height, fps)
+
+    # Not enough of the body visible: no count, ask the user to step back.
+    if depth is None or trusted_fraction < MIN_TRUSTED:
+        return not_counted("low_visibility", LOW_VISIBILITY_MESSAGE, trusted_fraction)
+
     # Count, then grade every rep.
-    rep_results: list[RepResult] = []
+    rep_results: list[SquatRepResult] = []
     for rep_number, detected_rep in enumerate(count_reps_peaks(depth, fps), start=1):
         bottom_index = find_rep_bottom_index(depth, detected_rep)
         bottom_depth = float(depth[bottom_index])
         tempo = measure_rep_tempo(depth, bottom_index, fps)
         rep_results.append(
-            RepResult(
+            SquatRepResult(
                 rep_number=rep_number,
                 start_seconds=timeline.slot_time_seconds(detected_rep.start_index),
                 bottom_seconds=timeline.slot_time_seconds(bottom_index),
@@ -147,7 +159,7 @@ def analyze_squat(timeline: LandmarkTimeline, video_width: int, video_height: in
         )
 
     rep_count = len(rep_results)
-    return AnalyzeResponse(
+    return SquatAnalyzeResponse(
         exercise="squat",
         status="ok",
         message=f"{rep_count} squat{'' if rep_count == 1 else 's'} counted",
@@ -155,8 +167,5 @@ def analyze_squat(timeline: LandmarkTimeline, video_width: int, video_height: in
         trusted_fraction=trusted_fraction,
         fps=fps,
         reps=rep_results,
-        depth_signal=DepthSignal(
-            times_seconds=[timeline.slot_time_seconds(slot_index) for slot_index in range(len(depth))],
-            values=[json_safe(float(depth_value)) for depth_value in depth],
-        ),
+        depth_signal=build_time_series(timeline, depth),
     )

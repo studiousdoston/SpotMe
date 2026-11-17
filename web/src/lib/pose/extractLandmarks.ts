@@ -26,13 +26,15 @@ export type ExtractionResult = {
 export type ExtractionProgress = {
   progressFraction: number;
   playbackRate: number;
+  // True while analysis is paused because the page is in the background (it resumes on return).
+  isPausedInBackground: boolean;
 };
 
 type ExtractLandmarksOptions = {
   videoElement: HTMLVideoElement;
   poseLandmarker: PoseLandmarker;
   signal: AbortSignal;
-  // Called on every analyzed frame during playback.
+  // Called on every analyzed frame during playback, and when a background pause starts or ends.
   onProgress: (progress: ExtractionProgress) => void;
 };
 
@@ -104,6 +106,7 @@ function showFirstFrame(videoElement: HTMLVideoElement, signal: AbortSignal): Pr
       if (frameCallbackHandle !== null) videoElement.cancelVideoFrameCallback(frameCallbackHandle);
       window.clearTimeout(timeoutTimer);
       window.clearTimeout(seekedGraceTimer);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       videoElement.removeEventListener("loadeddata", handleLoadedData);
       videoElement.removeEventListener("seeked", handleSeeked);
       videoElement.removeEventListener("error", handleVideoError);
@@ -151,14 +154,26 @@ function showFirstFrame(videoElement: HTMLVideoElement, signal: AbortSignal): Pr
       fail(createAbortError());
     }
 
-    const timeoutTimer = window.setTimeout(() => {
-      fail(new VideoDecodeError("No video frame arrived. The browser probably can't decode this video."));
-    }, FIRST_FRAME_TIMEOUT_MS);
+    // "No frame in time" means the browser can't decode the video, unless the page was in the
+    // background (browsers don't deliver frames then), so the timer only runs while visible.
+    let timeoutTimer: number | undefined;
+    function startDecodeTimeout(): void {
+      window.clearTimeout(timeoutTimer);
+      timeoutTimer = window.setTimeout(() => {
+        fail(new VideoDecodeError("No video frame arrived. The browser probably can't decode this video."));
+      }, FIRST_FRAME_TIMEOUT_MS);
+    }
+    function handleVisibilityChange(): void {
+      if (document.visibilityState === "hidden") window.clearTimeout(timeoutTimer);
+      else startDecodeTimeout();
+    }
 
     if (signal.aborted) {
       handleAbort();
       return;
     }
+    if (document.visibilityState === "visible") startDecodeTimeout();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     signal.addEventListener("abort", handleAbort);
     videoElement.addEventListener("error", handleVideoError);
 
@@ -187,6 +202,8 @@ type PlayAndAnalyzeOptions = {
 
 type PlaybackResult = {
   framesSkipped: number;
+  // How many times analysis paused because the page went into the background.
+  backgroundPauseCount: number;
   // Speed requested at the end of the run.
   finalPlaybackRate: number;
   // Measured: video seconds played per wall-clock second (shows whether the browser honored playbackRate).
@@ -194,7 +211,9 @@ type PlaybackResult = {
 };
 
 // Plays to the end, analyzing each presented frame. Slows playback down if detection
-// can't keep up.
+// can't keep up. Pauses while the page is in the background (browsers stop delivering frames
+// there, but the video may keep playing) and, on return, rewinds to the last analyzed frame
+// so no part of the video goes unanalyzed.
 function playAndAnalyze({
   videoElement,
   frameRecorder,
@@ -219,10 +238,18 @@ function playAndAnalyze({
     let firstCallback: { wallTimeMs: number; mediaTimeSeconds: number } | null = null;
     let latestCallback: { wallTimeMs: number; mediaTimeSeconds: number } | null = null;
 
+    // Background pause state (wall time spent paused is left out of the measured speed).
+    let isPausedInBackground = false;
+    let backgroundPauseCount = 0;
+    let pauseStartedWallTimeMs = 0;
+    let totalPausedWallTimeMs = 0;
+    let latestProgressFraction = 0;
+
     function cleanUp(): void {
       isSettled = true;
       if (frameCallbackHandle !== null) videoElement.cancelVideoFrameCallback(frameCallbackHandle);
       videoElement.pause();
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
       videoElement.removeEventListener("ended", handleEnded);
       videoElement.removeEventListener("error", handleVideoError);
       signal.removeEventListener("abort", handleAbort);
@@ -267,14 +294,15 @@ function playAndAnalyze({
     // Video seconds played per wall-clock second, between the first and latest frame callbacks.
     function measureAveragePlaybackSpeed(): number {
       if (firstCallback === null || latestCallback === null) return desiredPlaybackRate;
-      const wallSeconds = (latestCallback.wallTimeMs - firstCallback.wallTimeMs) / 1000;
+      const wallSeconds = (latestCallback.wallTimeMs - firstCallback.wallTimeMs - totalPausedWallTimeMs) / 1000;
       if (wallSeconds <= 0) return desiredPlaybackRate;
       return (latestCallback.mediaTimeSeconds - firstCallback.mediaTimeSeconds) / wallSeconds;
     }
 
     // Runs once per presented frame: count skips, detect, adjust speed, report progress.
     function handleVideoFrame(now: DOMHighResTimeStamp, frameMetadata: VideoFrameCallbackMetadata): void {
-      if (isSettled) return;
+      // A callback already queued when the background pause started: the resume replays this frame.
+      if (isSettled || isPausedInBackground) return;
 
       latestCallback = { wallTimeMs: now, mediaTimeSeconds: frameMetadata.mediaTime };
       firstCallback ??= latestCallback;
@@ -299,19 +327,75 @@ function playAndAnalyze({
 
       // Progress as a share of the duration (unknown durations report 0).
       const hasKnownDuration = Number.isFinite(videoElement.duration) && videoElement.duration > 0;
-      onProgress({
-        progressFraction: hasKnownDuration ? Math.min(1, frameMetadata.mediaTime / videoElement.duration) : 0,
-        playbackRate: desiredPlaybackRate,
-      });
+      latestProgressFraction = hasKnownDuration ? Math.min(1, frameMetadata.mediaTime / videoElement.duration) : 0;
+      reportProgress();
 
       frameCallbackHandle = videoElement.requestVideoFrameCallback(handleVideoFrame);
     }
 
+    function reportProgress(): void {
+      onProgress({ progressFraction: latestProgressFraction, playbackRate: desiredPlaybackRate, isPausedInBackground });
+    }
+
+    function startPlayback(): void {
+      videoElement.play().catch((playError: unknown) => {
+        // play() rejects with AbortError when we pause (cleanup or a background pause); that's not a failure.
+        if (playError instanceof DOMException && playError.name === "AbortError") return;
+        fail(playError instanceof Error ? playError : new Error("The video couldn't be played."));
+      });
+    }
+
+    // Page went into the background: stop playback and frame callbacks until it's back.
+    function pauseForBackground(): void {
+      if (isPausedInBackground) return;
+      isPausedInBackground = true;
+      backgroundPauseCount += 1;
+      pauseStartedWallTimeMs = performance.now();
+      if (frameCallbackHandle !== null) videoElement.cancelVideoFrameCallback(frameCallbackHandle);
+      frameCallbackHandle = null;
+      videoElement.pause();
+      reportProgress();
+    }
+
+    // Page is visible again: rewind to the last analyzed frame and carry on from there.
+    function resumeFromBackground(): void {
+      if (!isPausedInBackground) return;
+      isPausedInBackground = false;
+      totalPausedWallTimeMs += performance.now() - pauseStartedWallTimeMs;
+
+      // Frames that played between the page going hidden and the pause were never analyzed:
+      // replay from the last analyzed one (the recorder ignores frames it already has).
+      const lastAnalyzedFrame = frameRecorder.frames.at(-1);
+      if (lastAnalyzedFrame !== undefined) videoElement.currentTime = lastAnalyzedFrame.timestampMs / 1000;
+
+      // The seek makes the presented-frame counter jump: restart skip counting and the speed window.
+      lastPresentedFrameNumber = null;
+      windowAnalyzedFrames = 0;
+      windowSkippedFrames = 0;
+
+      reportProgress();
+      frameCallbackHandle = videoElement.requestVideoFrameCallback(handleVideoFrame);
+      startPlayback();
+    }
+
+    function handleVisibilityChange(): void {
+      if (isSettled) return;
+      if (document.visibilityState === "hidden") pauseForBackground();
+      else resumeFromBackground();
+    }
+
     function handleEnded(): void {
       if (isSettled) return;
+      // The video can reach its end while the page is going hidden, with the last frames never
+      // analyzed. Treat it as a background pause: the resume rewinds and plays them again.
+      if (isPausedInBackground || document.visibilityState === "hidden") {
+        pauseForBackground();
+        return;
+      }
       cleanUp();
       resolve({
         framesSkipped,
+        backgroundPauseCount,
         finalPlaybackRate: desiredPlaybackRate,
         averagePlaybackSpeed: measureAveragePlaybackSpeed(),
       });
@@ -330,18 +414,20 @@ function playAndAnalyze({
       return;
     }
 
-    // Wire up listeners, register for the next frame, then start playback at full speed.
+    // Wire up listeners, register for the next frame, then start playback at full speed
+    // (or wait, paused, if the page is already in the background).
     signal.addEventListener("abort", handleAbort);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
     videoElement.addEventListener("ended", handleEnded);
     videoElement.addEventListener("error", handleVideoError);
     videoElement.playbackRate = desiredPlaybackRate;
+    if (document.visibilityState === "hidden") {
+      pauseForBackground();
+      return;
+    }
     frameCallbackHandle = videoElement.requestVideoFrameCallback(handleVideoFrame);
-    onProgress({ progressFraction: 0, playbackRate: desiredPlaybackRate });
-    videoElement.play().catch((playError: unknown) => {
-      // play() rejects with AbortError when we pause during cleanup; that's not a failure.
-      if (playError instanceof DOMException && playError.name === "AbortError") return;
-      fail(playError instanceof Error ? playError : new Error("The video couldn't be played."));
-    });
+    reportProgress();
+    startPlayback();
   });
 }
 
@@ -380,6 +466,7 @@ export async function extractLandmarks({
       framesProcessed: frameRecorder.frames.length,
       framesWithPerson: frameRecorder.framesWithPerson,
       framesSkipped: playbackResult.framesSkipped,
+      backgroundPauseCount: playbackResult.backgroundPauseCount,
       largestGapMs: frameRecorder.largestGapMs,
       processingTimeMs: performance.now() - processingStartTime,
       finalPlaybackRate: playbackResult.finalPlaybackRate,

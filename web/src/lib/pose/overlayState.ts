@@ -1,48 +1,123 @@
 // Pure overlay logic: what the coaching overlay should show at a given video time,
 // and how big everything is for a given canvas size. No drawing, no DOM.
 // Only type imports here, so the file also runs directly under `node --test`.
+//
+// Shared by every exercise: rep timing (counter, active rep, grade pop-up), signal
+// interpolation, skeleton tints and the panel layout. Each exercise adds its own
+// state on top (squat: depth meter; curl: per-arm counters and elbow angles).
 
-import type { AnalysisResult, DepthSignal, Feedback, RepResult } from "@/types/analysis";
+import type {
+  AnalysisResult,
+  ArmSide,
+  CurlAnalysisResult,
+  CurlArmResult,
+  Feedback,
+  SquatAnalysisResult,
+  SquatRepResult,
+  TimeSeries,
+} from "@/types/analysis";
 
 // The grade pop-up stays this long after a rep ends, fading out during the last part.
 export const GRADE_POPUP_SECONDS = 2;
 export const GRADE_POPUP_FADE_SECONDS = 0.5;
 
+// ---- Shared types ----
+
+// Any rep with a time window and a moment it "counts" (squat bottom, curl top).
+export type TimedRep = {
+  repNumber: number;
+  startSeconds: number;
+  endSeconds: number;
+};
+
+// One colored badge; armLabel ("L"/"R") is put in front of the text for per-arm exercises.
+export type PopupBadge = {
+  feedback: Feedback;
+  armLabel: string | null;
+};
+
+// Badges shown together after one rep, fading out together.
 export type GradePopup = {
   repNumber: number;
-  depthFeedback: Feedback;
-  tempoFeedback: Feedback;
+  badges: PopupBadge[];
   // 1 = fully visible, 0 = gone.
   opacity: number;
 };
 
-export type OverlayState = {
+// Skeleton lines to tint with a feedback code's color: "all" lines, or only these connections.
+export type SkeletonTint = {
+  connections: "all" | ReadonlyArray<readonly [number, number]>;
+  feedbackCode: string;
+};
+
+type SharedOverlayState = {
+  // Drawn left to right in one row under the panel.
+  gradePopups: GradePopup[];
+  // Empty outside reps: the skeleton keeps its default color.
+  skeletonTints: SkeletonTint[];
+};
+
+export type SquatOverlayState = SharedOverlayState & {
+  exercise: "squat";
   // A rep counts once the playhead has passed its bottom.
   completedRepCount: number;
   totalRepCount: number;
   // The rep whose window [start, end) contains the playhead, if any.
-  activeRep: RepResult | null;
+  activeRep: SquatRepResult | null;
   // Depth at the playhead, interpolated from the depth signal (null when unknown).
   currentDepth: number | null;
-  gradePopup: GradePopup | null;
-  // Depth feedback code of the active rep (tints the skeleton), or null outside reps.
-  skeletonFeedbackCode: string | null;
 };
 
-// ---- State at a time ----
+// Null when the arm is hidden (not counted).
+export type CurlArmOverlayState = {
+  // A curl counts once the playhead has passed its top.
+  completedRepCount: number;
+  totalRepCount: number;
+  // Elbow angle in degrees at the playhead (null when unknown).
+  currentAngle: number | null;
+} | null;
 
-export function countCompletedReps(reps: RepResult[], timeSeconds: number): number {
-  return reps.filter((rep) => timeSeconds >= rep.bottomSeconds).length;
+export type CurlOverlayState = SharedOverlayState & {
+  exercise: "curl";
+  arms: Record<ArmSide, CurlArmOverlayState>;
+};
+
+export type OverlayState = SquatOverlayState | CurlOverlayState;
+
+// Skeleton connections of each arm (shoulder → elbow → wrist), as in skeleton.ts.
+export const ARM_CONNECTIONS: Record<ArmSide, ReadonlyArray<readonly [number, number]>> = {
+  left: [
+    [11, 13],
+    [13, 15],
+  ],
+  right: [
+    [12, 14],
+    [14, 16],
+  ],
+};
+
+// ---- State at a time (shared) ----
+
+// Reps whose counting moment (bottom / top) the playhead has passed.
+export function countRepsPast(countingMomentsSeconds: number[], timeSeconds: number): number {
+  return countingMomentsSeconds.filter((momentSeconds) => timeSeconds >= momentSeconds).length;
 }
 
-export function findActiveRep(reps: RepResult[], timeSeconds: number): RepResult | null {
+export function countCompletedReps(reps: SquatRepResult[], timeSeconds: number): number {
+  return countRepsPast(
+    reps.map((rep) => rep.bottomSeconds),
+    timeSeconds,
+  );
+}
+
+export function findActiveRep<Rep extends TimedRep>(reps: Rep[], timeSeconds: number): Rep | null {
   return reps.find((rep) => timeSeconds >= rep.startSeconds && timeSeconds < rep.endSeconds) ?? null;
 }
 
-// Linear interpolation between the two depth samples around timeSeconds.
+// Linear interpolation between the two samples around timeSeconds.
 // Clamps to the first/last sample outside the signal; uses the non-null neighbour if one is missing.
-export function interpolateDepth(depthSignal: DepthSignal, timeSeconds: number): number | null {
-  const { timesSeconds, values } = depthSignal;
+export function interpolateSignal(signal: TimeSeries, timeSeconds: number): number | null {
+  const { timesSeconds, values } = signal;
   if (timesSeconds.length === 0) return null;
   if (timeSeconds <= timesSeconds[0]) return values[0];
   const lastIndex = timesSeconds.length - 1;
@@ -67,8 +142,11 @@ export function interpolateDepth(depthSignal: DepthSignal, timeSeconds: number):
   return valueBefore + fraction * (valueAfter - valueBefore);
 }
 
-// The most recently finished rep, for GRADE_POPUP_SECONDS after its end (fading at the end).
-export function findGradePopup(reps: RepResult[], timeSeconds: number): GradePopup | null {
+// The most recently finished rep, for GRADE_POPUP_SECONDS after its end, with its fade opacity.
+export function findRecentlyFinishedRep<Rep extends TimedRep>(
+  reps: Rep[],
+  timeSeconds: number,
+): { rep: Rep; opacity: number } | null {
   const finishedRecently = reps.filter(
     (rep) => timeSeconds >= rep.endSeconds && timeSeconds < rep.endSeconds + GRADE_POPUP_SECONDS,
   );
@@ -76,27 +154,95 @@ export function findGradePopup(reps: RepResult[], timeSeconds: number): GradePop
   if (latestRep === undefined) return null;
 
   const secondsLeft = latestRep.endSeconds + GRADE_POPUP_SECONDS - timeSeconds;
+  return { rep: latestRep, opacity: Math.min(1, secondsLeft / GRADE_POPUP_FADE_SECONDS) };
+}
+
+// ---- State at a time (per exercise) ----
+
+function computeSquatOverlayState(analysis: SquatAnalysisResult, timeSeconds: number): SquatOverlayState {
+  const activeRep = findActiveRep(analysis.reps, timeSeconds);
+  const finishedRep = findRecentlyFinishedRep(analysis.reps, timeSeconds);
   return {
-    repNumber: latestRep.repNumber,
-    depthFeedback: latestRep.depthFeedback,
-    tempoFeedback: latestRep.tempoFeedback,
-    opacity: Math.min(1, secondsLeft / GRADE_POPUP_FADE_SECONDS),
+    exercise: "squat",
+    completedRepCount: countCompletedReps(analysis.reps, timeSeconds),
+    totalRepCount: analysis.reps.length,
+    activeRep,
+    currentDepth: analysis.depthSignal ? interpolateSignal(analysis.depthSignal, timeSeconds) : null,
+    // Depth + tempo badges after each squat.
+    gradePopups:
+      finishedRep === null
+        ? []
+        : [
+            {
+              repNumber: finishedRep.rep.repNumber,
+              badges: [
+                { feedback: finishedRep.rep.depthFeedback, armLabel: null },
+                { feedback: finishedRep.rep.tempoFeedback, armLabel: null },
+              ],
+              opacity: finishedRep.opacity,
+            },
+          ],
+    // The whole skeleton takes the active rep's depth grade color.
+    skeletonTints: activeRep === null ? [] : [{ connections: "all", feedbackCode: activeRep.depthFeedback.code }],
+  };
+}
+
+const ARM_LABELS: Record<ArmSide, string> = { left: "L", right: "R" };
+const ARM_SIDES: ArmSide[] = ["left", "right"];
+
+function computeCurlArmOverlayState(armResult: CurlArmResult, timeSeconds: number): CurlArmOverlayState {
+  if (armResult.repCount === null) return null;
+  return {
+    completedRepCount: countRepsPast(
+      armResult.reps.map((rep) => rep.peakSeconds),
+      timeSeconds,
+    ),
+    totalRepCount: armResult.repCount,
+    currentAngle: armResult.elbowAngleSignal ? interpolateSignal(armResult.elbowAngleSignal, timeSeconds) : null,
+  };
+}
+
+function computeCurlOverlayState(analysis: CurlAnalysisResult, timeSeconds: number): CurlOverlayState {
+  const gradePopups: GradePopup[] = [];
+  const skeletonTints: SkeletonTint[] = [];
+  for (const armSide of ARM_SIDES) {
+    const armReps = analysis.arms[armSide].reps;
+
+    // "L Full" / "R Partial" after each curl of this arm.
+    const finishedRep = findRecentlyFinishedRep(armReps, timeSeconds);
+    if (finishedRep !== null) {
+      gradePopups.push({
+        repNumber: finishedRep.rep.repNumber,
+        badges: [{ feedback: finishedRep.rep.rangeFeedback, armLabel: ARM_LABELS[armSide] }],
+        opacity: finishedRep.opacity,
+      });
+    }
+
+    // Only this arm's lines take the curl's grade color while it's curling.
+    const activeRep = findActiveRep(armReps, timeSeconds);
+    if (activeRep !== null) {
+      skeletonTints.push({ connections: ARM_CONNECTIONS[armSide], feedbackCode: activeRep.rangeFeedback.code });
+    }
+  }
+
+  return {
+    exercise: "curl",
+    arms: {
+      left: computeCurlArmOverlayState(analysis.arms.left, timeSeconds),
+      right: computeCurlArmOverlayState(analysis.arms.right, timeSeconds),
+    },
+    gradePopups,
+    skeletonTints,
   };
 }
 
 // Everything the overlay shows at this time. Null when there's nothing to coach
-// (e.g. a low-visibility result with no reps or depth curve).
+// (a result that wasn't counted: low visibility, or not filmed from the front).
 export function computeOverlayState(analysis: AnalysisResult, timeSeconds: number): OverlayState | null {
   if (analysis.status !== "ok") return null;
-  const activeRep = findActiveRep(analysis.reps, timeSeconds);
-  return {
-    completedRepCount: countCompletedReps(analysis.reps, timeSeconds),
-    totalRepCount: analysis.reps.length,
-    activeRep,
-    currentDepth: analysis.depthSignal ? interpolateDepth(analysis.depthSignal, timeSeconds) : null,
-    gradePopup: findGradePopup(analysis.reps, timeSeconds),
-    skeletonFeedbackCode: activeRep?.depthFeedback.code ?? null,
-  };
+  return analysis.exercise === "squat"
+    ? computeSquatOverlayState(analysis, timeSeconds)
+    : computeCurlOverlayState(analysis, timeSeconds);
 }
 
 // ---- Layout ----
@@ -129,6 +275,15 @@ const SIZE_UNITS = {
   badgePaddingX: 2.5,
 } as const;
 
+// What the panel contains, which decides its height:
+// counter · [meter] · detail line (squat: "Depth 0.82"; curl: the elbow angles).
+export type PanelShape = {
+  hasMeter: boolean;
+};
+
+export const SQUAT_PANEL_SHAPE: PanelShape = { hasMeter: true };
+export const CURL_PANEL_SHAPE: PanelShape = { hasMeter: false };
+
 // All sizes are in CANVAS pixels (CSS px × devicePixelRatio), ready to draw with.
 export type OverlayLayout = {
   unit: number;
@@ -139,44 +294,47 @@ export type OverlayLayout = {
   counterFontSize: number;
   labelFontSize: number;
   meterWidth: number;
+  // 0 when the panel has no meter.
   meterHeight: number;
   badgeHeight: number;
   badgeFontSize: number;
   badgePaddingX: number;
-  // False on very small players: the "Depth 0.82" line is dropped to keep the panel short.
-  showDepthText: boolean;
+  // False on very small players: the detail line ("Depth 0.82") is dropped to keep the panel short.
+  showDetailText: boolean;
   // Panel height (its width depends on text, measured when drawing).
   panelHeight: number;
 };
 
-// Panel height in units: padding · counter · gap · meter [· gap · depth text] · padding.
-function panelHeightInUnits(meterHeightUnits: number, showDepthText: boolean): number {
-  const depthTextUnits = showDepthText ? SIZE_UNITS.gap + SIZE_UNITS.labelFontSize : 0;
-  return (
-    2 * SIZE_UNITS.padding + SIZE_UNITS.counterFontSize + SIZE_UNITS.gap + meterHeightUnits + depthTextUnits
-  );
+// Panel height in units: padding · counter · [gap · meter] · [gap · detail text] · padding.
+function panelHeightInUnits(meterHeightUnits: number | null, showDetailText: boolean): number {
+  const meterUnits = meterHeightUnits === null ? 0 : SIZE_UNITS.gap + meterHeightUnits;
+  const detailTextUnits = showDetailText ? SIZE_UNITS.gap + SIZE_UNITS.labelFontSize : 0;
+  return 2 * SIZE_UNITS.padding + SIZE_UNITS.counterFontSize + meterUnits + detailTextUnits;
 }
 
 // Layout for a video displayed at displayWidth × displayHeight CSS px.
 // Rules, in priority order:
 //   1. readability: counter >= 18 CSS px, labels >= 12 CSS px (unit >= 3 px);
 //   2. the panel covers at most ~40% of the displayed height. If it doesn't fit, first drop the
-//      "Depth 0.82" line, then shrink the meter (down to MIN_METER_HEIGHT_UNITS). If it still
+//      detail line, then shrink the meter (down to MIN_METER_HEIGHT_UNITS). If it still
 //      doesn't fit (tiny player), readability wins and the panel is allowed to be taller.
 export function computeOverlayLayout(
   displayWidth: number,
   displayHeight: number,
   devicePixelRatio: number = 1,
+  panelShape: PanelShape = SQUAT_PANEL_SHAPE,
 ): OverlayLayout {
   const unitCss = Math.max(MIN_UNIT_CSS_PX, Math.min(displayWidth, displayHeight) * UNIT_FRACTION_OF_SHORT_SIDE);
   const maxPanelHeightUnits = (MAX_PANEL_HEIGHT_FRACTION * displayHeight) / unitCss;
 
-  let showDepthText = true;
-  let meterHeightUnits: number = SIZE_UNITS.meterHeight;
+  let showDetailText = true;
+  let meterHeightUnits: number | null = panelShape.hasMeter ? SIZE_UNITS.meterHeight : null;
   if (panelHeightInUnits(meterHeightUnits, true) > maxPanelHeightUnits) {
-    showDepthText = false;
-    const spareUnits = maxPanelHeightUnits - panelHeightInUnits(0, false);
-    meterHeightUnits = Math.max(MIN_METER_HEIGHT_UNITS, Math.min(SIZE_UNITS.meterHeight, spareUnits));
+    showDetailText = false;
+    if (meterHeightUnits !== null) {
+      const spareUnits = maxPanelHeightUnits - panelHeightInUnits(0, false);
+      meterHeightUnits = Math.max(MIN_METER_HEIGHT_UNITS, Math.min(SIZE_UNITS.meterHeight, spareUnits));
+    }
   }
 
   // Convert units to canvas pixels.
@@ -190,12 +348,12 @@ export function computeOverlayLayout(
     counterFontSize: SIZE_UNITS.counterFontSize * unit,
     labelFontSize: SIZE_UNITS.labelFontSize * unit,
     meterWidth: SIZE_UNITS.meterWidth * unit,
-    meterHeight: meterHeightUnits * unit,
+    meterHeight: (meterHeightUnits ?? 0) * unit,
     badgeHeight: SIZE_UNITS.badgeHeight * unit,
     badgeFontSize: SIZE_UNITS.badgeFontSize * unit,
     badgePaddingX: SIZE_UNITS.badgePaddingX * unit,
-    showDepthText,
-    panelHeight: panelHeightInUnits(meterHeightUnits, showDepthText) * unit,
+    showDetailText,
+    panelHeight: panelHeightInUnits(meterHeightUnits, showDetailText) * unit,
   };
 }
 
