@@ -20,7 +20,6 @@ venv/
 # Mac / editor
 .DS_Store
 .vscode/
-EOF
 # Web app / server
 node_modules/
 dist/

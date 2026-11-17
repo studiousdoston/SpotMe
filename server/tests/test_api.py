@@ -1,7 +1,9 @@
 """POST /api/analyze through FastAPI's TestClient."""
 
+import importlib
 from typing import Any
 
+import pytest
 from fastapi.testclient import TestClient
 
 from main import app
@@ -104,3 +106,23 @@ def test_analyze_rejects_wrong_landmark_count() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_docs_are_off_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
+    import main
+
+    monkeypatch.setenv("SPOTME_ENV", "production")
+    production_client = TestClient(importlib.reload(main).app)
+    try:
+        assert production_client.get("/docs").status_code == 404
+        assert production_client.get("/openapi.json").status_code == 404
+        # The API itself still works.
+        assert production_client.get("/api/health").json() == {"status": "ok"}
+    finally:
+        # Back to the development app for the other tests.
+        monkeypatch.delenv("SPOTME_ENV")
+        importlib.reload(main)
+
+
+def test_docs_are_on_in_development() -> None:
+    assert client.get("/docs").status_code == 200

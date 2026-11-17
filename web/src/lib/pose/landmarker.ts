@@ -1,4 +1,4 @@
-import { FilesetResolver, PoseLandmarker } from "@mediapipe/tasks-vision";
+import type { PoseLandmarker } from "@mediapipe/tasks-vision";
 
 // Must match the installed @mediapipe/tasks-vision version in package.json,
 // so the WASM runtime and the JS bundle stay in sync. Bump both together.
@@ -51,6 +51,8 @@ export function createDetectorClock(): (videoTimeMs: number) => number {
 
 // Creates a landmarker with the notebook's settings on the given delegate.
 async function createPoseLandmarker(delegate: PoseDelegate): Promise<PoseLandmarker> {
+  // The MediaPipe JS is fetched only now (its own chunk), keeping it out of the first page load.
+  const { FilesetResolver, PoseLandmarker } = await import("@mediapipe/tasks-vision");
   const visionFileset = await FilesetResolver.forVisionTasks(WASM_BASE_URL);
   return PoseLandmarker.createFromOptions(visionFileset, {
     baseOptions: { modelAssetPath: POSE_MODEL_URL, delegate },
