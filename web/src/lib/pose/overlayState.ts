@@ -4,7 +4,8 @@
 //
 // Shared by every exercise: rep timing (counter, active rep, grade pop-up), signal
 // interpolation, skeleton tints and the panel layout. Each exercise adds its own
-// state on top (squat: depth meter; curl: per-arm counters and curl heights).
+// state on top (squat: depth meter; curl: per-arm counters and curl heights;
+// push-up: rep counter and the live elbow angle).
 
 import type {
   AnalysisResult,
@@ -12,6 +13,8 @@ import type {
   CurlAnalysisResult,
   CurlArmResult,
   Feedback,
+  PushupAnalysisResult,
+  PushupRepResult,
   SquatAnalysisResult,
   SquatRepResult,
   TimeSeries,
@@ -82,7 +85,18 @@ export type CurlOverlayState = SharedOverlayState & {
   arms: Record<ArmSide, CurlArmOverlayState>;
 };
 
-export type OverlayState = SquatOverlayState | CurlOverlayState;
+export type PushupOverlayState = SharedOverlayState & {
+  exercise: "push_up";
+  // A push-up counts once the playhead has passed its bottom.
+  completedRepCount: number;
+  totalRepCount: number;
+  // Elbow angle of the more-bent arm at the playhead, in degrees (null when unknown or not graded).
+  currentElbowAngle: number | null;
+  // False in a side view: no elbow angle and no depth grades to show.
+  depthGraded: boolean;
+};
+
+export type OverlayState = SquatOverlayState | CurlOverlayState | PushupOverlayState;
 
 // Skeleton connections of each arm (shoulder → elbow → wrist), as in skeleton.ts.
 export const ARM_CONNECTIONS: Record<ArmSide, ReadonlyArray<readonly [number, number]>> = {
@@ -96,6 +110,12 @@ export const ARM_CONNECTIONS: Record<ArmSide, ReadonlyArray<readonly [number, nu
   ],
 };
 
+// Both arms: the lines a push-up's depth grade tints.
+export const BOTH_ARMS_CONNECTIONS: ReadonlyArray<readonly [number, number]> = [
+  ...ARM_CONNECTIONS.left,
+  ...ARM_CONNECTIONS.right,
+];
+
 // ---- State at a time (shared) ----
 
 // Reps whose counting moment (bottom / top) the playhead has passed.
@@ -103,7 +123,7 @@ export function countRepsPast(countingMomentsSeconds: number[], timeSeconds: num
   return countingMomentsSeconds.filter((momentSeconds) => timeSeconds >= momentSeconds).length;
 }
 
-export function countCompletedReps(reps: SquatRepResult[], timeSeconds: number): number {
+export function countCompletedReps(reps: (SquatRepResult | PushupRepResult)[], timeSeconds: number): number {
   return countRepsPast(
     reps.map((rep) => rep.bottomSeconds),
     timeSeconds,
@@ -249,13 +269,46 @@ function computeCurlOverlayState(analysis: CurlAnalysisResult, timeSeconds: numb
   };
 }
 
+function computePushupOverlayState(analysis: PushupAnalysisResult, timeSeconds: number): PushupOverlayState {
+  // Side view: reps are "not_graded", so there's no grade to pop up or tint with.
+  const gradedReps = analysis.depthGraded ? analysis.reps : [];
+  const activeRep = findActiveRep(gradedReps, timeSeconds);
+  const finishedRep = findRecentlyFinishedRep(gradedReps, timeSeconds);
+  return {
+    exercise: "push_up",
+    completedRepCount: countCompletedReps(analysis.reps, timeSeconds),
+    totalRepCount: analysis.reps.length,
+    currentElbowAngle: analysis.elbowAngleSignal ? interpolateSignal(analysis.elbowAngleSignal, timeSeconds) : null,
+    depthGraded: analysis.depthGraded,
+    // "Good depth" / "Too shallow" after each push-up.
+    gradePopups:
+      finishedRep === null
+        ? []
+        : [
+            {
+              repNumber: finishedRep.rep.repNumber,
+              badges: [{ feedback: finishedRep.rep.depthFeedback, armLabel: null }],
+              opacity: finishedRep.opacity,
+            },
+          ],
+    // Both arms take the active push-up's depth grade color.
+    skeletonTints:
+      activeRep === null ? [] : [{ connections: BOTH_ARMS_CONNECTIONS, feedbackCode: activeRep.depthFeedback.code }],
+  };
+}
+
 // Everything the overlay shows at this time. Null when there's nothing to coach
-// (a result that wasn't counted: low visibility, or not filmed from the front).
+// (a result that wasn't counted: low visibility, not filmed from the front, or incomplete).
 export function computeOverlayState(analysis: AnalysisResult, timeSeconds: number): OverlayState | null {
   if (analysis.status !== "ok") return null;
-  return analysis.exercise === "squat"
-    ? computeSquatOverlayState(analysis, timeSeconds)
-    : computeCurlOverlayState(analysis, timeSeconds);
+  switch (analysis.exercise) {
+    case "squat":
+      return computeSquatOverlayState(analysis, timeSeconds);
+    case "curl":
+      return computeCurlOverlayState(analysis, timeSeconds);
+    case "push_up":
+      return computePushupOverlayState(analysis, timeSeconds);
+  }
 }
 
 // ---- Layout ----
@@ -289,13 +342,14 @@ const SIZE_UNITS = {
 } as const;
 
 // What the panel contains, which decides its height:
-// counter · [meter] · detail line (squat: "Depth 0.82"; curl: the elbow angles).
+// counter · [meter] · detail line (squat: "Depth 0.82"; curl: curl heights; push-up: elbow angle).
 export type PanelShape = {
   hasMeter: boolean;
 };
 
 export const SQUAT_PANEL_SHAPE: PanelShape = { hasMeter: true };
 export const CURL_PANEL_SHAPE: PanelShape = { hasMeter: false };
+export const PUSHUP_PANEL_SHAPE: PanelShape = { hasMeter: false };
 
 // All sizes are in CANVAS pixels (CSS px × devicePixelRatio), ready to draw with.
 export type OverlayLayout = {

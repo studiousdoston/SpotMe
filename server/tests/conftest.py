@@ -10,6 +10,7 @@ import pytest
 FIXTURES_DIRECTORY = Path(__file__).parent / "fixtures"
 SQUAT_FRONT_FIXTURE = FIXTURES_DIRECTORY / "squat-front.landmarks.json"
 CURL_FRONT_FIXTURE = FIXTURES_DIRECTORY / "curls_front.landmarks.json"
+PUSHUP_FRONT_FIXTURE = FIXTURES_DIRECTORY / "pushups_front.landmarks.json"
 
 FPS = 30.0
 VIDEO_WIDTH = 480
@@ -33,6 +34,13 @@ def squat_front_recording() -> dict[str, Any]:
 def curl_front_recording() -> dict[str, Any]:
     """Real alternating-curl recording from the web app (PoseRecording JSON, without the exercise field)."""
     with CURL_FRONT_FIXTURE.open() as fixture_file:
+        return json.load(fixture_file)
+
+
+@pytest.fixture
+def pushup_front_recording() -> dict[str, Any]:
+    """Real push-up recording filmed from the front (PoseRecording JSON, without the exercise field)."""
+    with PUSHUP_FRONT_FIXTURE.open() as fixture_file:
         return json.load(fixture_file)
 
 
@@ -178,6 +186,123 @@ def build_curl_recording(
                 else:
                     add_frame(0.0, curling_height)
             rest()
+
+    return {
+        "frames": frames,
+        "videoWidth": VIDEO_WIDTH,
+        "videoHeight": VIDEO_HEIGHT,
+        "durationSeconds": frame_index / FPS,
+    }
+
+
+# ---- Synthetic push-ups ----
+
+# Wrists stay on the floor; the shoulders move down as the elbows bend (pixel lengths as for curls).
+PUSHUP_FLOOR_Y = 0.80
+TOP_ELBOW_ANGLE = 170.0
+GOOD_BOTTOM_ELBOW_ANGLE = 70.0
+
+
+def place_pushup_arm(
+    wrist_pixel_x: float, elbow_angle: float, outward: float
+) -> tuple[float, float, float, float]:
+    """Shoulder straight above the wrist, elbow pushed outwards, so the 2D elbow angle is exactly elbow_angle.
+
+    Returns (shoulder_pixel_y, elbow_pixel_x, elbow_pixel_y, wrist_pixel_y).
+    """
+    wrist_pixel_y = PUSHUP_FLOOR_Y * VIDEO_HEIGHT
+    # Law of cosines: shoulder-to-wrist distance for this elbow angle.
+    shoulder_to_wrist = math.sqrt(
+        UPPER_ARM_PIXELS**2
+        + FOREARM_PIXELS**2
+        - 2 * UPPER_ARM_PIXELS * FOREARM_PIXELS * math.cos(math.radians(elbow_angle))
+    )
+    shoulder_pixel_y = wrist_pixel_y - shoulder_to_wrist
+    # Elbow: UPPER_ARM_PIXELS from the shoulder, FOREARM_PIXELS from the wrist, on the outer side.
+    distance_down_from_shoulder = (UPPER_ARM_PIXELS**2 - FOREARM_PIXELS**2 + shoulder_to_wrist**2) / (
+        2 * shoulder_to_wrist
+    )
+    distance_outwards = math.sqrt(max(UPPER_ARM_PIXELS**2 - distance_down_from_shoulder**2, 0.0))
+    elbow_pixel_x = wrist_pixel_x + outward * distance_outwards
+    elbow_pixel_y = shoulder_pixel_y + distance_down_from_shoulder
+    return shoulder_pixel_y, elbow_pixel_x, elbow_pixel_y, wrist_pixel_y
+
+
+def build_pushup_landmarks(
+    left_elbow_angle: float,
+    right_elbow_angle: float,
+    arm_visibility: tuple[float, float] = (0.99, 0.99),
+    shoulder_x_gap: float = 0.2,
+    shoulder_z_gap: float = 0.0,
+) -> list[dict[str, float]]:
+    """33 landmarks for a push-up filmed from the front, with both elbow angles set (180 = straight).
+
+    shoulder_x_gap / shoulder_z_gap set the body turn angle: atan(z_gap / x_gap).
+    arm_visibility = (left, right) visibility of each arm's elbow and wrist.
+    """
+    # Hips, knees and ankles barely visible: the push-up must not need them.
+    landmarks = [{"x": 0.5, "y": 0.6, "z": 0.0, "visibility": 0.1} for _ in range(33)]
+    arm_specs = (
+        # (shoulder, elbow, wrist, shoulder x, outward direction, elbow angle, visibility)
+        (11, 13, 15, 0.5 + shoulder_x_gap / 2, 1.0, left_elbow_angle, arm_visibility[0]),
+        (12, 14, 16, 0.5 - shoulder_x_gap / 2, -1.0, right_elbow_angle, arm_visibility[1]),
+    )
+    for shoulder_index, elbow_index, wrist_index, shoulder_x, outward, elbow_angle, visibility in arm_specs:
+        shoulder_z = shoulder_z_gap / 2 if shoulder_index == 11 else -shoulder_z_gap / 2
+        wrist_pixel_x = shoulder_x * VIDEO_WIDTH
+        shoulder_pixel_y, elbow_pixel_x, elbow_pixel_y, wrist_pixel_y = place_pushup_arm(
+            wrist_pixel_x, elbow_angle, outward
+        )
+        for landmark_index, pixel_x, pixel_y, landmark_visibility in (
+            (shoulder_index, wrist_pixel_x, shoulder_pixel_y, 0.99),
+            (elbow_index, elbow_pixel_x, elbow_pixel_y, visibility),
+            (wrist_index, wrist_pixel_x, wrist_pixel_y, visibility),
+        ):
+            landmarks[landmark_index] = {
+                "x": pixel_x / VIDEO_WIDTH,
+                "y": pixel_y / VIDEO_HEIGHT,
+                "z": shoulder_z if landmark_index == shoulder_index else 0.0,
+                "visibility": landmark_visibility,
+            }
+    return landmarks
+
+
+def build_pushup_recording(
+    pushup_count: int,
+    bottom_elbow_angles: tuple[float, float] = (GOOD_BOTTOM_ELBOW_ANGLE, GOOD_BOTTOM_ELBOW_ANGLE),
+    arm_visibility: tuple[float, float] = (0.99, 0.99),
+    shoulder_x_gap: float = 0.2,
+    shoulder_z_gap: float = 0.0,
+    pushup_seconds: float = 2.0,
+    rest_seconds: float = 0.5,
+) -> dict[str, Any]:
+    """Push-ups where both elbows bend from 170° to (left, right) bottom angles and back (cosine)."""
+    frames: list[dict[str, Any]] = []
+    frame_index = 0
+
+    def add_frame(left_angle: float, right_angle: float) -> None:
+        nonlocal frame_index
+        landmarks = build_pushup_landmarks(
+            left_angle, right_angle, arm_visibility, shoulder_x_gap, shoulder_z_gap
+        )
+        frames.append({"timestampMs": frame_index * 1000 / FPS, "landmarks": landmarks})
+        frame_index += 1
+
+    def rest() -> None:
+        for _ in range(round(rest_seconds * FPS)):
+            add_frame(TOP_ELBOW_ANGLE, TOP_ELBOW_ANGLE)
+
+    pushup_frames = round(pushup_seconds * FPS)
+    rest()
+    for _ in range(pushup_count):
+        for pushup_frame in range(pushup_frames):
+            # 0 → 1 → 0 over the push-up: down to the bottom angles and back up.
+            bend_fraction = (1 - math.cos(2 * math.pi * pushup_frame / pushup_frames)) / 2
+            add_frame(
+                TOP_ELBOW_ANGLE - bend_fraction * (TOP_ELBOW_ANGLE - bottom_elbow_angles[0]),
+                TOP_ELBOW_ANGLE - bend_fraction * (TOP_ELBOW_ANGLE - bottom_elbow_angles[1]),
+            )
+        rest()
 
     return {
         "frames": frames,

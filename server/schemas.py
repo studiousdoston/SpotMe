@@ -42,7 +42,7 @@ class PoseFrame(CamelModel):
 class AnalyzeRequest(CamelModel):
     """The PoseRecording the web app produces, plus which exercise it is."""
 
-    exercise: Literal["squat", "curl"]
+    exercise: Literal["squat", "curl", "push_up"]
     # At least two frames, so a frame interval (and therefore fps) can be measured.
     frames: list[PoseFrame] = Field(min_length=2)
     video_width: int = Field(gt=0)
@@ -153,5 +153,45 @@ class CurlAnalyzeResponse(CamelModel):
     arms: CurlArms
 
 
+# ---- Response: push-up ----
+
+
+class PushupRepResult(CamelModel):
+    """One counted push-up, graded by how far the elbows bent at the bottom."""
+
+    rep_number: int
+    start_seconds: float
+    # Moment the body was lowest.
+    bottom_seconds: float
+    end_seconds: float
+    # Smallest elbow angle (more-bent arm) within ±0.3 s of the bottom, in degrees.
+    # None when depth wasn't graded (side view).
+    bottom_elbow_angle: float | None
+    depth_feedback: Feedback
+
+
+class PushupAnalyzeResponse(CamelModel):
+    """Result of analyzing one push-up set."""
+
+    exercise: Literal["push_up"]
+    status: Literal["ok", "low_visibility", "incomplete_recording"]
+    message: str
+    # Non-blocking advice (e.g. "film from the front"); the count is still shown.
+    warnings: list[str]
+    # How far the shoulders are turned away from the camera: 0° = facing it, 90° = side on.
+    body_turn_angle: float | None
+    # False in a side view: reps are counted, but every rep's depth is "not_graded".
+    depth_graded: bool
+    rep_count: int
+    fps: float
+    reps: list[PushupRepResult]
+    # Shoulders above the wrists, in arm lengths (drops at each rep). None when not counted.
+    body_height_signal: TimeSeries | None
+    # Elbow angle of the more-bent arm, in degrees. None when depth wasn't graded.
+    elbow_angle_signal: TimeSeries | None
+
+
 # One response type per exercise; "exercise" tells them apart.
-AnalyzeResponse = Annotated[SquatAnalyzeResponse | CurlAnalyzeResponse, Field(discriminator="exercise")]
+AnalyzeResponse = Annotated[
+    SquatAnalyzeResponse | CurlAnalyzeResponse | PushupAnalyzeResponse, Field(discriminator="exercise")
+]

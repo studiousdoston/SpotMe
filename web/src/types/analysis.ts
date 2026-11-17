@@ -4,12 +4,14 @@ import type { PoseFrame } from "@/types/pose";
 
 // Every exercise the app knows about, and the ones the server can analyze today.
 export type ExerciseId = "squat" | "curl" | "push_up";
-export type AnalyzableExercise = "squat" | "curl";
+export type AnalyzableExercise = "squat" | "curl" | "push_up";
 
-// Feedback codes the server sends (server/analysis/squat.py and curl.py).
+// Feedback codes the server sends (server/analysis/squat.py, curl.py and pushup.py).
 export type DepthFeedbackCode = "good_depth" | "almost_depth" | "too_shallow";
 export type TempoFeedbackCode = "controlled" | "dropping_too_fast" | "too_fast";
 export type RangeFeedbackCode = "full_curl" | "partial_curl";
+// not_graded: filmed from the side, so the elbows couldn't be measured.
+export type PushupDepthFeedbackCode = "good_depth" | "too_shallow" | "not_graded";
 
 // A stable code (for styling) plus human-readable text.
 export type Feedback<Code extends string = string> = {
@@ -103,8 +105,41 @@ export type CurlAnalysisResult = {
   arms: Record<ArmSide, CurlArmResult>;
 };
 
+// ---- Response: push-up ----
+
+export type PushupRepResult = {
+  repNumber: number;
+  startSeconds: number;
+  // Moment the body was lowest.
+  bottomSeconds: number;
+  endSeconds: number;
+  // Smallest elbow angle (more-bent arm) around the bottom, in degrees (<= 90 = good depth).
+  // null when depth wasn't graded (side view).
+  bottomElbowAngle: number | null;
+  depthFeedback: Feedback<PushupDepthFeedbackCode>;
+};
+
+export type PushupAnalysisResult = {
+  exercise: "push_up";
+  status: "ok" | "low_visibility" | "incomplete_recording";
+  message: string;
+  // Non-blocking advice (e.g. "Film from the front to get depth feedback."); the count is still shown.
+  warnings: string[];
+  // 0° = facing the camera, 90° = side on. null when the shoulders were never visible.
+  bodyTurnAngle: number | null;
+  // false in a side view: reps are counted, but every rep's depth is "not_graded".
+  depthGraded: boolean;
+  repCount: number;
+  fps: number;
+  reps: PushupRepResult[];
+  // Shoulders above the wrists, in arm lengths (dips at each rep). null when not counted.
+  bodyHeightSignal: TimeSeries | null;
+  // Elbow angle of the more-bent arm, in degrees. null when depth wasn't graded.
+  elbowAngleSignal: TimeSeries | null;
+};
+
 // One result type per exercise; narrow with `analysis.exercise`.
-export type AnalysisResult = SquatAnalysisResult | CurlAnalysisResult;
+export type AnalysisResult = SquatAnalysisResult | CurlAnalysisResult | PushupAnalysisResult;
 
 // FastAPI's 422 body: { detail: [{ loc: [...], msg: "..." }, ...] }
 export type ValidationErrorItem = {

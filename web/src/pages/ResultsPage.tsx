@@ -3,6 +3,7 @@ import { Navigate, useNavigate } from "react-router";
 import { CurlResults } from "@/components/CurlResults";
 import { DownloadLandmarksButton } from "@/components/DownloadLandmarksButton";
 import { PoseReplayPlayer, type PoseReplayPlayerHandle } from "@/components/PoseReplayPlayer";
+import { PushupResults } from "@/components/PushupResults";
 import { RecordingSummary } from "@/components/RecordingSummary";
 import { SquatResults } from "@/components/SquatResults";
 import { useWorkoutSession } from "@/hooks/useWorkoutSession";
@@ -62,8 +63,10 @@ export function ResultsPage() {
         </div>
       ) : analysis.exercise === "squat" ? (
         <SquatResults analysis={analysis} onSeek={handleSeek} />
-      ) : (
+      ) : analysis.exercise === "curl" ? (
         <CurlResults analysis={analysis} onSeek={handleSeek} />
+      ) : (
+        <PushupResults analysis={analysis} onSeek={handleSeek} />
       )}
 
       {/* Actions */}

@@ -10,13 +10,16 @@ import {
   computeOverlayState,
   CURL_PANEL_SHAPE,
   meterFillFraction,
+  PUSHUP_PANEL_SHAPE,
   SQUAT_PANEL_SHAPE,
   type CurlArmOverlayState,
   type CurlOverlayState,
   type GradePopup,
   type OverlayLayout,
   type OverlayState,
+  type PanelShape,
   type PopupBadge,
+  type PushupOverlayState,
   type SkeletonTint,
   type SquatOverlayState,
 } from "@/lib/pose/overlayState";
@@ -77,6 +80,30 @@ function curlPanelContent(overlayState: CurlOverlayState): PanelContent {
     meter: null,
     detailText: `Height L ${describeHeight(left)} · R ${describeHeight(right)}`,
   };
+}
+
+// Push-up: "Rep 3 / 7" and "Elbow 85°" ("Depth not graded" in a side view).
+function pushupPanelContent(overlayState: PushupOverlayState): PanelContent {
+  const { currentElbowAngle } = overlayState;
+  return {
+    counterText: `Rep ${overlayState.completedRepCount} / ${overlayState.totalRepCount}`,
+    meter: null,
+    detailText: !overlayState.depthGraded
+      ? "Depth not graded"
+      : `Elbow ${currentElbowAngle === null ? "–" : `${Math.round(currentElbowAngle)}°`}`,
+  };
+}
+
+// Panel content and shape for the overlay's exercise.
+function panelFor(overlayState: OverlayState): { content: PanelContent; shape: PanelShape } {
+  switch (overlayState.exercise) {
+    case "squat":
+      return { content: squatPanelContent(overlayState), shape: SQUAT_PANEL_SHAPE };
+    case "curl":
+      return { content: curlPanelContent(overlayState), shape: CURL_PANEL_SHAPE };
+    case "push_up":
+      return { content: pushupPanelContent(overlayState), shape: PUSHUP_PANEL_SHAPE };
+  }
 }
 
 // ---- Panel: counter, optional meter, detail line ----
@@ -214,13 +241,12 @@ export function drawOverlay(
   canvasHeight: number,
   devicePixelRatio: number = 1,
 ): void {
-  const isSquat = overlayState.exercise === "squat";
-  const panelContent = isSquat ? squatPanelContent(overlayState) : curlPanelContent(overlayState);
+  const { content: panelContent, shape: panelShape } = panelFor(overlayState);
   const layout = computeOverlayLayout(
     canvasWidth / devicePixelRatio,
     canvasHeight / devicePixelRatio,
     devicePixelRatio,
-    isSquat ? SQUAT_PANEL_SHAPE : CURL_PANEL_SHAPE,
+    panelShape,
   );
   context.save();
   const panelBottom = drawPanel(context, panelContent, layout);
@@ -261,7 +287,8 @@ type RenderReplayFrameOptions = {
 };
 
 // Clears the canvas and draws everything for this video time: the skeleton (tinted by the
-// active rep's grade when the overlay is on: whole body for squats, the curling arm for curls)
+// active rep's grade when the overlay is on: whole body for squats, the curling arm for curls,
+// both arms for push-ups)
 // and the coaching overlay.
 export function renderReplayFrame(
   context: CanvasRenderingContext2D,

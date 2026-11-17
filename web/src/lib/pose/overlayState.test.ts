@@ -2,9 +2,17 @@
 
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import type { CurlAnalysisResult, CurlRepResult, SquatAnalysisResult, SquatRepResult } from "@/types/analysis";
+import type {
+  CurlAnalysisResult,
+  CurlRepResult,
+  PushupAnalysisResult,
+  PushupRepResult,
+  SquatAnalysisResult,
+  SquatRepResult,
+} from "@/types/analysis";
 import {
   ARM_CONNECTIONS,
+  BOTH_ARMS_CONNECTIONS,
   computeOverlayLayout,
   computeOverlayState,
   countCompletedReps,
@@ -250,6 +258,95 @@ describe("curl overlay state", () => {
   test("no overlay when not filmed from the front", () => {
     const notFront: CurlAnalysisResult = { ...CURL_ANALYSIS, status: "not_front_view" };
     assert.equal(computeOverlayState(notFront, 1), null);
+  });
+});
+
+// A push-up from startSeconds to startSeconds + 1 s, bottom at +0.5 s, graded from its elbow angle (<= 90 = good).
+function makePushup(repNumber: number, startSeconds: number, bottomElbowAngle: number): PushupRepResult {
+  return {
+    repNumber,
+    startSeconds,
+    bottomSeconds: startSeconds + 0.5,
+    endSeconds: startSeconds + 1,
+    bottomElbowAngle,
+    depthFeedback:
+      bottomElbowAngle <= 90
+        ? { code: "good_depth", text: "Good depth" }
+        : { code: "too_shallow", text: "Too shallow, bend your elbows to 90°" },
+  };
+}
+
+// Push-ups at 0 s (good) and 2 s (too shallow).
+const PUSHUP_ANALYSIS: PushupAnalysisResult = {
+  exercise: "push_up",
+  status: "ok",
+  message: "2 push-ups",
+  warnings: [],
+  bodyTurnAngle: 5,
+  depthGraded: true,
+  repCount: 2,
+  fps: 30,
+  reps: [makePushup(1, 0, 70), makePushup(2, 2, 150)],
+  bodyHeightSignal: { timesSeconds: [0, 0.5, 1], values: [0.9, 0.4, 0.9] },
+  elbowAngleSignal: { timesSeconds: [0, 0.5, 1], values: [170, 70, 170] },
+};
+
+// Side view: counted, depth not graded, no elbow angle.
+const SIDE_VIEW_PUSHUPS: PushupAnalysisResult = {
+  ...PUSHUP_ANALYSIS,
+  warnings: ["Film from the front to get depth feedback."],
+  bodyTurnAngle: 80,
+  depthGraded: false,
+  reps: PUSHUP_ANALYSIS.reps.map((rep) => ({
+    ...rep,
+    bottomElbowAngle: null,
+    depthFeedback: { code: "not_graded", text: "Depth not graded (side view)" },
+  })),
+  elbowAngleSignal: null,
+};
+
+describe("push-up overlay state", () => {
+  test("counts once past the bottom, with the live elbow angle", () => {
+    const overlayState = computeOverlayState(PUSHUP_ANALYSIS, 0.25);
+    assert.ok(overlayState !== null && overlayState.exercise === "push_up");
+    assert.equal(overlayState.completedRepCount, 0);
+    assert.equal(overlayState.totalRepCount, 2);
+    assert.equal(overlayState.currentElbowAngle, 120);
+
+    const afterBoth = computeOverlayState(PUSHUP_ANALYSIS, 2.6);
+    assert.ok(afterBoth !== null && afterBoth.exercise === "push_up");
+    assert.equal(afterBoth.completedRepCount, 2);
+  });
+
+  test("tints both arms in the active push-up's depth grade", () => {
+    assert.deepEqual(computeOverlayState(PUSHUP_ANALYSIS, 0.3)?.skeletonTints, [
+      { connections: BOTH_ARMS_CONNECTIONS, feedbackCode: "good_depth" },
+    ]);
+    assert.deepEqual(computeOverlayState(PUSHUP_ANALYSIS, 2.3)?.skeletonTints, [
+      { connections: BOTH_ARMS_CONNECTIONS, feedbackCode: "too_shallow" },
+    ]);
+  });
+
+  test("Good depth / Too shallow pop-up after each push-up", () => {
+    const afterFirst = computeOverlayState(PUSHUP_ANALYSIS, 1.2)?.gradePopups;
+    assert.deepEqual(afterFirst?.map((gradePopup) => gradePopup.badges[0].feedback.code), ["good_depth"]);
+    const afterSecond = computeOverlayState(PUSHUP_ANALYSIS, 3.2)?.gradePopups;
+    assert.deepEqual(afterSecond?.map((gradePopup) => gradePopup.badges[0].feedback.code), ["too_shallow"]);
+  });
+
+  test("side view: still counts, but no tints, pop-ups or elbow angle", () => {
+    const overlayState = computeOverlayState(SIDE_VIEW_PUSHUPS, 2.6);
+    assert.ok(overlayState !== null && overlayState.exercise === "push_up");
+    assert.equal(overlayState.completedRepCount, 2);
+    assert.equal(overlayState.depthGraded, false);
+    assert.equal(overlayState.currentElbowAngle, null);
+    assert.deepEqual(overlayState.skeletonTints, []);
+    assert.deepEqual(computeOverlayState(SIDE_VIEW_PUSHUPS, 1.2)?.gradePopups, []);
+  });
+
+  test("no overlay for an incomplete recording", () => {
+    const incomplete: PushupAnalysisResult = { ...PUSHUP_ANALYSIS, status: "incomplete_recording" };
+    assert.equal(computeOverlayState(incomplete, 1), null);
   });
 });
 

@@ -26,7 +26,13 @@ export const EXERCISE_OPTIONS: ExerciseOption[] = [
     isAvailable: true,
     cameraHint: "Face the camera, both arms in view.",
   },
-  { id: "push_up", label: "Push-up", pluralLabel: "push-ups", isAvailable: false, cameraHint: null },
+  {
+    id: "push_up",
+    label: "Push-up",
+    pluralLabel: "push-ups",
+    isAvailable: true,
+    cameraHint: "Phone on the floor in front of you for depth feedback (any angle counts reps).",
+  },
 ];
 
 export function getExerciseOption(exerciseId: ExerciseId): ExerciseOption {
@@ -37,7 +43,7 @@ export function getExerciseOption(exerciseId: ExerciseId): ExerciseOption {
 
 // Narrows an exercise to one the server can analyze today.
 export function isAnalyzableExercise(exerciseId: ExerciseId): exerciseId is AnalyzableExercise {
-  return exerciseId === "squat" || exerciseId === "curl";
+  return exerciseId === "squat" || exerciseId === "curl" || exerciseId === "push_up";
 }
 
 // "1 squat" / "6 squats"

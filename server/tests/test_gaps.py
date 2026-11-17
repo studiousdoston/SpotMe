@@ -5,10 +5,22 @@ from typing import Any
 import pytest
 
 from analysis.curl import analyze_curl
+from analysis.pushup import analyze_pushup
 from analysis.squat import analyze_squat
 from analysis.timeline import build_landmark_timeline, find_long_gaps
-from schemas import AnalyzeRequest, CurlAnalyzeResponse, PoseFrame, SquatAnalyzeResponse
-from tests.conftest import build_curl_recording, build_squat_recording, remove_frames_between
+from schemas import (
+    AnalyzeRequest,
+    CurlAnalyzeResponse,
+    PoseFrame,
+    PushupAnalyzeResponse,
+    SquatAnalyzeResponse,
+)
+from tests.conftest import (
+    build_curl_recording,
+    build_pushup_recording,
+    build_squat_recording,
+    remove_frames_between,
+)
 
 GAP_MESSAGE = (
     "Part of the video wasn't analyzed (gap at 3.2–12.6 s). Please analyze it again and keep the app open."
@@ -23,6 +35,11 @@ def run_squat_analysis(recording: dict[str, Any]) -> SquatAnalyzeResponse:
 def run_curl_analysis(recording: dict[str, Any]) -> CurlAnalyzeResponse:
     request = AnalyzeRequest.model_validate({**recording, "exercise": "curl"})
     return analyze_curl(build_landmark_timeline(request.frames), request.video_width, request.video_height)
+
+
+def run_pushup_analysis(recording: dict[str, Any]) -> PushupAnalyzeResponse:
+    request = AnalyzeRequest.model_validate({**recording, "exercise": "push_up"})
+    return analyze_pushup(build_landmark_timeline(request.frames), request.video_width, request.video_height)
 
 
 # ---- Gap detection ----
@@ -106,3 +123,24 @@ def test_curl_fixture_with_two_gaps_names_both(curl_front_recording: dict[str, A
         "Part of the video wasn't analyzed (gaps at 2.0–4.0 s and 9.0–10.0 s). "
         "Please analyze it again and keep the app open."
     )
+
+
+# ---- Push-up ----
+
+
+def test_pushup_with_gap_is_incomplete() -> None:
+    result = run_pushup_analysis(remove_frames_between(build_pushup_recording(pushup_count=6), 3.2, 12.6))
+
+    assert result.status == "incomplete_recording"
+    assert result.message == GAP_MESSAGE
+    assert result.rep_count == 0
+    assert result.reps == []
+    assert result.body_height_signal is None
+    assert result.elbow_angle_signal is None
+
+
+def test_pushup_fixture_with_gap_is_incomplete(pushup_front_recording: dict[str, Any]) -> None:
+    result = run_pushup_analysis(remove_frames_between(pushup_front_recording, 3.2, 12.6))
+
+    assert result.status == "incomplete_recording"
+    assert result.message == GAP_MESSAGE

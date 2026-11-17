@@ -13,6 +13,8 @@ const TONE_BY_FEEDBACK_CODE: Record<string, FeedbackTone> = {
   too_fast: "warning",
   partial_curl: "warning",
   too_shallow: "bad",
+  // Push-up filmed from the side: no grade, so no color.
+  not_graded: "neutral",
 };
 
 export function getFeedbackTone(feedbackCode: string): FeedbackTone {
@@ -37,6 +39,7 @@ const SHORT_TEXT_BY_FEEDBACK_CODE: Record<string, string> = {
   too_fast: "Too fast",
   full_curl: "Full",
   partial_curl: "Partial",
+  not_graded: "Not graded",
 };
 
 export function getShortFeedbackText(feedback: { code: string; text: string }): string {
